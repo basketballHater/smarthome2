@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "22826556075",
+    "firebase_url": "https://smart-home-e2079-default-rtdb.firebaseio.com",
+    "project_id": "smart-home-e2079",
+    "storage_bucket": "smart-home-e2079.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:22826556075:android:0848d22a2e998f09d835ee",
+        "android_client_info": {
+          "package_name": "com.example.smarthome"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDZ9r0a1HisqRWRJUXVDZtvn0xaz-Jvi9Q"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
