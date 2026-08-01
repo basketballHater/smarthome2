@@ -13,6 +13,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
@@ -92,6 +93,13 @@ fun Main(){
                     icon = { Icon(Icons.Filled.Settings, contentDescription = "Configurations") },
                     label = { Text("Configurations") }
                 )
+
+                NavigationBarItem(
+                    selected = selectedTab == 3,
+                    onClick = { selectedTab = 3 },
+                    icon = { Icon(Icons.Filled.Search, contentDescription = "Configurations") },
+                    label = { Text("Navigation") }
+                )
             }
         }
     ) { innerPadding ->
@@ -101,8 +109,11 @@ fun Main(){
         // Otherwise show an empty/placeholder screen.
         when (selectedTab) {
             1 -> {
-                // Apply innerPadding here so the device list doesn't get covered by the bottom bar.
-                SmartHomeScreen(modifier = Modifier.padding(innerPadding))
+                DeviceDetailScreen(
+                    devicePath = "Floors/floor_01/Rooms/room_01/Lights", // use a real path from your DB
+                    deviceId = "light_01", // use a real device id from your DB
+                    modifier = Modifier.padding(innerPadding)
+                )
             }
             0 -> {
                 Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
@@ -112,6 +123,11 @@ fun Main(){
             2 -> {
                 Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
                     Text("Configurations page coming soon", modifier = Modifier.padding(16.dp))
+                }
+            }
+            3 -> {
+                Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+                    Text("Navigation page coming soon", modifier = Modifier.padding(16.dp))
                 }
             }
         }
