@@ -4,6 +4,8 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -36,14 +38,49 @@ import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
+import android.content.Context
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+
 
 // A plain data holder representing ONE device (a light, a camera, etc).
 // It just stores values -- it has no idea Firebase exists.
 data class Device(
-    val id: String,      // e.g. "Lamp1"
+    val id: Int,      // e.g. "Lamp1"
     val type: String,    // e.g. "Light"
+    val name: String,    // e.g. "Light"
     val state: String,   // "on" or "off"
     val path: String      // where in Firebase to write updates, e.g. "Floors/F1/Rooms/Bedroom/Lights"
+)
+
+data class Floor(
+    val id: Int,      // e.g. "Lamp1"
+    val name : String,    // e.g. "Light"
+    val path: String      // where in Firebase to write updates, e.g. "Floors/F1/Rooms/Bedroom/Lights"
+)
+data class Room(
+    val id: Int,      // e.g. "Lamp1"
+    val name : String,    // e.g. "Light"
+    val path: String      // where in Firebase to write updates, e.g. "Floors/F1/Rooms/Bedroom/Lights"
+)
+
+data class VirtualDevice(
+    val id: String,          // you generate this, e.g. "vdev1"
+    val customName: String,  // name the user picks
+    val linkedPath: String?,  // path of the real Device it's mapped to, null = not mapped yet
+    val wattage: Double
+)
+
+data class VirtualRoom(
+    val id: String,
+    val customName: String,
+    val linkedPath: String?
+)
+
+data class VirtualFloor(
+    val id: String,
+    val customName: String,
+    val linkedPath: String?
 )
 
 class MainActivity : ComponentActivity() {
@@ -53,6 +90,7 @@ class MainActivity : ComponentActivity() {
 
         // setContent replaces setContentView(R.layout...) from the old system.
         // Everything inside these braces IS the screen -- no XML file involved.
+        VirtualStorage.load(this)
         setContent {
             // MaterialTheme gives Text/Switch/etc their default Android look (colors, fonts).
             MaterialTheme {
@@ -68,17 +106,10 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun Main(){
-    var selectedTab by remember{mutableStateOf(1)}
+    var selectedTab by remember{mutableIntStateOf(1)}
     Scaffold(
         bottomBar = {
             NavigationBar {
-                // --- Cameras tab ---
-                NavigationBarItem(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    icon = { Icon(Icons.Filled.Star, contentDescription = "Cameras") },
-                    label = { Text("Cameras") }
-                )
                 // --- Devices tab ---
                 NavigationBarItem(
                     selected = selectedTab == 1,
@@ -86,12 +117,26 @@ fun Main(){
                     icon = { Icon(Icons.Filled.Home, contentDescription = "Devices") },
                     label = { Text("Devices") }
                 )
-                // --- Configurations tab ---
+                // --- Cameras tab ---
+                NavigationBarItem(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    icon = { Icon(Icons.Filled.Star, contentDescription = "Cameras") },
+                    label = { Text("Cameras") }
+                )
+                // --- Navigation Tab ---
                 NavigationBarItem(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
+                    icon = { Icon(Icons.Filled.Search, contentDescription = "Devices") },
+                    label = { Text("Navigate") }
+                )
+                // --- Configurations tab ---
+                NavigationBarItem(
+                    selected = selectedTab == 3,
+                    onClick = { selectedTab = 3 },
                     icon = { Icon(Icons.Filled.Settings, contentDescription = "Configurations") },
-                    label = { Text("Configurations") }
+                    label = { Text("Config") }
                 )
 
                 NavigationBarItem(
@@ -117,10 +162,13 @@ fun Main(){
             }
             0 -> {
                 Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-                    Text("Cameras page coming soon", modifier = Modifier.padding(16.dp))
+                    Text("Navigations page coming soon", modifier = Modifier.padding(16.dp))
                 }
             }
             2 -> {
+                Navigate(modifier = Modifier.padding(innerPadding))
+            }
+            3 -> {
                 Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
                     Text("Configurations page coming soon", modifier = Modifier.padding(16.dp))
                 }
@@ -134,11 +182,53 @@ fun Main(){
     }
 }
 
+object AppData {
+    var floorList = mutableStateListOf<Floor>()
+    var roomList = mutableStateListOf<Room>()
+    var deviceList = mutableStateListOf<Device>()
+
+    var virtualFloorList = mutableStateListOf<VirtualFloor>()
+    var virtualRoomList = mutableStateListOf<VirtualRoom>()
+    var virtualDeviceList = mutableStateListOf<VirtualDevice>()
+}
+
+object VirtualStorage {
+    private const val PREFS_NAME = "virtual_prefs"
+    private val gson = Gson()
+
+    fun save(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putString("devices", gson.toJson(AppData.virtualDeviceList.toList()))
+            .putString("rooms", gson.toJson(AppData.virtualRoomList.toList()))
+            .putString("floors", gson.toJson(AppData.virtualFloorList.toList()))
+            .apply()
+    }
+
+    fun load(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+        prefs.getString("devices", null)?.let { json ->
+            val type = object : TypeToken<List<VirtualDevice>>() {}.type
+            AppData.virtualDeviceList.clear()
+            AppData.virtualDeviceList.addAll(gson.fromJson(json, type))
+        }
+        prefs.getString("rooms", null)?.let { json ->
+            val type = object : TypeToken<List<VirtualRoom>>() {}.type
+            AppData.virtualRoomList.clear()
+            AppData.virtualRoomList.addAll(gson.fromJson(json, type))
+        }
+        prefs.getString("floors", null)?.let { json ->
+            val type = object : TypeToken<List<VirtualFloor>>() {}.type
+            AppData.virtualFloorList.clear()
+            AppData.virtualFloorList.addAll(gson.fromJson(json, type))
+        }
+    }
+}
 
 @Composable
 fun SmartHomeScreen(modifier: Modifier = Modifier) {
 
-    var deviceList by remember { mutableStateOf(mutableListOf<Device>()) }
     var isEmpty by remember { mutableStateOf(false) }
 
     DisposableEffect(Unit) {
@@ -147,38 +237,52 @@ fun SmartHomeScreen(modifier: Modifier = Modifier) {
             override fun onDataChange(snapshot: DataSnapshot) {
                 if (!snapshot.exists()) {
                     isEmpty = true
-                    deviceList = mutableListOf()
+                    AppData.deviceList.clear()
                     return
                 }
                 isEmpty = false
-                val newList = mutableListOf<Device>()
+                val newList1 = mutableStateListOf<Device>()
+                val newList2 = mutableStateListOf<Room>()
+                val newList3 = mutableStateListOf<Floor>()
 
-                for (floorSnap in snapshot.children) {
-                    val floorId = floorSnap.key ?: continue
+                var roomNum = 0
+                var floorNum = 0
+
+
+                snapshot.children.forEachIndexed { index, floorSnap ->
+                    val floorId = floorSnap.key ?: return@forEachIndexed
+                    newList3.add(
+                        Floor(id = index, name = floorId,path = "Floors/$floorId"  )
+                    )
+                    val floorNum = index
                     val roomsSnap = floorSnap.child("Rooms")
-
-                    for (roomSnap in roomsSnap.children) {
-                        val roomId = roomSnap.key ?: continue
+                    roomsSnap.children.forEachIndexed { index, roomSnap ->
+                        val roomId = roomSnap.key ?: return@forEachIndexed
                         val categories = listOf("Cameras", "Lights", "Acs", "Outlets")
-
+                        newList2.add(
+                            Room(id = index, name = "$floorNum-$roomId",path = "Floors/$floorId/Rooms/$roomId"  )
+                        )
+                        val roomNum = index
                         for (category in categories) {
                             val typeLabel = category.dropLast(1)
                             val categorySnap = roomSnap.child(category)
 
-                            for (deviceSnap in categorySnap.children) {
-                                val deviceId = deviceSnap.key ?: continue
+                            categorySnap.children.forEachIndexed { index, deviceSnap ->
+                                val devName = deviceSnap.key
                                 val state = deviceSnap.child("state")
                                     .getValue(String::class.java) ?: "off"
-                                val path = "Floors/$floorId/Rooms/$roomId/$category"
+                                val path = "Floors/$floorId/Rooms/$roomId/$category/$devName"
 
-                                newList.add(
-                                    Device(id = deviceId, type = typeLabel, state = state, path = path)
+                                newList1.add(
+                                    Device(id = index, name ="F-$floorNum-R-$roomNum-$typeLabel-$index", type = typeLabel, state = state, path = path)
                                 )
                             }
                         }
                     }
                 }
-                deviceList = newList
+                AppData.deviceList = newList1
+                AppData.roomList = newList2
+                AppData.floorList = newList3
             }
 
             override fun onCancelled(error: DatabaseError) {
@@ -201,7 +305,7 @@ fun SmartHomeScreen(modifier: Modifier = Modifier) {
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp)
         ) {
-            for (device in deviceList) {
+            for (device in AppData.deviceList) {
                 DeviceRow(device = device)
             }
         }
