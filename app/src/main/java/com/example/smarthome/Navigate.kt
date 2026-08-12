@@ -105,6 +105,20 @@ import kotlin.math.abs
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.ui.graphics.nativeCanvas
+
+data class PlacedDeviceView(val placement: DevicePlacement, val label: String)
+
+private const val DEVICE_HIT_RADIUS = 20f
+
+fun findClosestDevice(tap: Point, placements: List<PlacedDeviceView>): PlacedDeviceView? {
+    return placements
+        .minByOrNull { kotlin.math.hypot(tap.x - it.placement.position.x, tap.y - it.placement.position.y) }
+        ?.takeIf {
+            kotlin.math.hypot(tap.x - it.placement.position.x, tap.y - it.placement.position.y) < DEVICE_HIT_RADIUS
+        }
+}
 
 data class Point(val x: Float, val y: Float)
 
@@ -128,6 +142,8 @@ fun Navigate(modifier: Modifier = Modifier) {
     var selectedRoom by remember { mutableIntStateOf(0) }
     var selectedDevice by remember { mutableIntStateOf(0) }
     var roomPendingDelete by remember { mutableStateOf<VirtualRoom?>(null) }
+    var pendingDevicePosition by remember { mutableStateOf<Point?>(null) }
+    var deviceDialogRoomId by remember { mutableStateOf<String?>(null) }
     var floorPendingDelete by remember { mutableStateOf<VirtualFloor?>(null) }
     var devicePendingDelete by remember { mutableStateOf<VirtualDevice?>(null) }
     var objectType by remember { mutableIntStateOf(-1) }
@@ -315,6 +331,22 @@ fun Navigate(modifier: Modifier = Modifier) {
                         val backgroundWalls = currentRooms
                             .filterIndexed { index, _ -> index != selectedRoom }
                             .flatMap { it.walls }
+                        var placingDevice by remember(selectedRoom, selectedFloor) { mutableStateOf(false) }
+                        var deviceInfoDialog by remember { mutableStateOf<PlacedDeviceView?>(null) }
+
+                        val devicePlacements = currentRoom.devices.map { placement ->
+                            val label = AppData.virtualDeviceList.firstOrNull { it.id == placement.virtualDeviceId }?.customName
+                                ?: "Unknown device"
+                            PlacedDeviceView(placement, label)
+                        }
+
+                        if (placingDevice) {
+                            Text(
+                                text = "Tap a spot in the room to place the device",
+                                color = Color.White,
+                                fontSize = 14.sp
+                            )
+                        }
 
                         RoomEditor(
                             initialWalls = wallList,
@@ -324,7 +356,19 @@ fun Navigate(modifier: Modifier = Modifier) {
                             instantComplete = instantComplete,
                             onInstantCompleteConsumed = { instantComplete = false },
                             undoSignal = undoTrigger,
-                            backgroundWalls = backgroundWalls
+                            backgroundWalls = backgroundWalls,
+                            placingDevice = placingDevice,
+                            onDevicePointSelected = { point ->
+                                pendingDevicePosition = point
+                                deviceDialogRoomId = currentRoom.id
+                                placingDevice = false
+                                objectType = 2
+                                showAddDialog = true
+                            },
+                            devicePlacements = devicePlacements,
+                            onDeviceClicked = { placement ->
+                                deviceInfoDialog = devicePlacements.firstOrNull { it.placement == placement }
+                            }
                         )
 
                         // Save exactly once when the shape completes.
@@ -357,6 +401,19 @@ fun Navigate(modifier: Modifier = Modifier) {
                             }
                             Button(
                                 modifier = Modifier.padding(5.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (placingDevice) Color(0xFFFFA500) else Color(0xFF1E5E6E),
+                                    contentColor = Color.White
+                                ),
+                                onClick = { placingDevice = !placingDevice }
+                            ) {
+                                Icon(
+                                    imageVector = if (placingDevice) Icons.Default.Close else Icons.Default.Add,
+                                    contentDescription = "Add Device"
+                                )
+                            }
+                            Button(
+                                modifier = Modifier.padding(5.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E5E6E), contentColor = Color.White),
                                 onClick = {
                                     updateRoom(selectedFloor, currentRoom.id) { it.copy(walls = emptyList(), wallSet = false) }
@@ -370,6 +427,25 @@ fun Navigate(modifier: Modifier = Modifier) {
                                 Icon(imageVector = Icons.Default.Delete, contentDescription = "Delete")
                             }
                             Text(text = selectedRoom.toString())
+                        }
+                        deviceInfoDialog?.let { pd ->
+                            AlertDialog(
+                                onDismissRequest = { deviceInfoDialog = null },
+                                title = { Text(pd.label) },
+                                text = { Text("Placed at (${pd.placement.position.x.toInt()}, ${pd.placement.position.y.toInt()})") },
+                                confirmButton = {
+                                    TextButton(onClick = {
+                                        updateRoom(selectedFloor, currentRoom.id) { r ->
+                                            r.copy(devices = r.devices.filterNot {
+                                                it.virtualDeviceId == pd.placement.virtualDeviceId && it.position == pd.placement.position
+                                            })
+                                        }
+                                        VirtualStorage.save(context)
+                                        deviceInfoDialog = null
+                                    }) { Text("Remove", color = Color.Red) }
+                                },
+                                dismissButton = { TextButton(onClick = { deviceInfoDialog = null }) { Text("Close") } }
+                            )
                         }
                     }
                 }
@@ -527,10 +603,24 @@ fun Navigate(modifier: Modifier = Modifier) {
 
 
     if (showAddDialog) {
-//            AddVirtualDeviceScreen(context = context, onDone = { showAddDialog = false })
-        Dialog(onDismissRequest = { showAddDialog = false }) {
+        Dialog(onDismissRequest = {
+            showAddDialog = false
+            pendingDevicePosition = null
+            deviceDialogRoomId = null
+        }) {
             Surface(shape = RoundedCornerShape(16.dp)) {
-                AddVirtualObjectScreen(context = context,objectType ,selectedFloor, onDone = { showAddDialog = false })
+                AddVirtualObjectScreen(
+                    context = context,
+                    objectType = objectType,
+                    floor = selectedFloor,
+                    placementRoomId = deviceDialogRoomId,
+                    placementPosition = pendingDevicePosition,
+                    onDone = {
+                        showAddDialog = false
+                        pendingDevicePosition = null
+                        deviceDialogRoomId = null
+                    }
+                )
             }
         }
     }
@@ -540,7 +630,14 @@ fun Navigate(modifier: Modifier = Modifier) {
 
 fun safeRooms(list: MutableList<VirtualRoom>?): MutableList<VirtualRoom> = list ?: mutableListOf()
 @Composable
-fun AddVirtualObjectScreen(context: Context, objectType: Int, floor: Int,onDone: () -> Unit) {
+fun AddVirtualObjectScreen(
+    context: Context,
+    objectType: Int,
+    floor: Int,
+    placementRoomId: String? = null,
+    placementPosition: Point? = null,
+    onDone: () -> Unit
+) {
     var customName by remember { mutableStateOf("") }
     var wattage by remember { mutableDoubleStateOf(0.0) }
     var selectedDevice by remember { mutableStateOf<Device?>(null) }
@@ -548,6 +645,14 @@ fun AddVirtualObjectScreen(context: Context, objectType: Int, floor: Int,onDone:
     var selectedFloor by remember { mutableStateOf<Floor?>(null) }
 
     Column(modifier = Modifier.padding(16.dp)) {
+        if (placementPosition != null) {
+            Text(
+                text = "Placing device at (${placementPosition.x.toInt()}, ${placementPosition.y.toInt()})",
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
         OutlinedTextField(
             value = customName,
             onValueChange = { customName = it },
@@ -828,6 +933,8 @@ private const val TAP_SLOP = 12f
 private const val MIN_SCALE = 0.4f
 private const val MAX_SCALE = 5f
 
+
+
 @Composable
 fun RoomEditor(
     initialWalls: List<Wall>,
@@ -837,7 +944,11 @@ fun RoomEditor(
     instantComplete: Boolean,
     onInstantCompleteConsumed: () -> Unit,
     undoSignal: Int,
-    backgroundWalls: List<Wall>
+    backgroundWalls: List<Wall>,
+    placingDevice: Boolean,
+    onDevicePointSelected: (Point) -> Unit,
+    devicePlacements: List<PlacedDeviceView>,
+    onDeviceClicked: (DevicePlacement) -> Unit
 ) {
     var walls by remember(initialWalls) { mutableStateOf(initialWalls) }
     var lastPoint by remember(initialWalls) { mutableStateOf(initialWalls.lastOrNull()?.end) }
@@ -846,8 +957,6 @@ fun RoomEditor(
     var snapX by remember { mutableStateOf<Float?>(null) }
     var snapY by remember { mutableStateOf<Float?>(null) }
 
-    // Pan/zoom applied only for rendering. Wall coordinates stay in a fixed "world"
-    // space, so nothing shifts in storage when the user zooms.
     var scale by remember { mutableFloatStateOf(1f) }
     var panOffset by remember { mutableStateOf(Offset.Zero) }
 
@@ -866,14 +975,11 @@ fun RoomEditor(
         return Point(x, y)
     }
 
-    // Snap against every wall on the floor (other rooms + this room's own), so the
-    // first point you place can align with anything already drawn.
     fun snapCandidates(): List<Point> =
         backgroundWalls.flatMap { listOf(it.start, it.end) } +
                 walls.flatMap { listOf(it.start, it.end) } +
                 listOfNotNull(firstPoint)
 
-    // Finish button: close the loop back to the first point.
     LaunchedEffect(instantComplete) {
         if (instantComplete) {
             val previous = lastPoint
@@ -889,10 +995,9 @@ fun RoomEditor(
         }
     }
 
-    // Undo button: remove exactly one wall segment.
     var undoReady by remember { mutableStateOf(false) }
     LaunchedEffect(undoSignal) {
-        if (!undoReady) { undoReady = true; return@LaunchedEffect } // skip initial value
+        if (!undoReady) { undoReady = true; return@LaunchedEffect }
         if (walls.isEmpty()) return@LaunchedEffect
 
         val trimmed = walls.dropLast(1)
@@ -904,14 +1009,14 @@ fun RoomEditor(
         } else {
             lastPoint = trimmed.last().end
         }
-        if (shapeComplete) onShapeComplete(false) // popping the closing wall reopens the shape
+        if (shapeComplete) onShapeComplete(false)
     }
 
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
             .height(250.dp)
-            .pointerInput(shapeComplete) {
+            .pointerInput(shapeComplete, placingDevice) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     down.consume()
@@ -927,7 +1032,6 @@ fun RoomEditor(
                         val pressed = event.changes.filter { it.pressed }
 
                         if (pressed.size >= 2) {
-                            // --- Two-finger pinch/pan ---
                             isTransforming = true
                             val p1 = pressed[0].position
                             val p2 = pressed[1].position
@@ -935,10 +1039,10 @@ fun RoomEditor(
                             val distance = (p1 - p2).getDistance().coerceAtLeast(1f)
 
                             if (prevCentroid != null && prevDistance != null) {
-                                panOffset += centroid - prevCentroid!! // pan at current scale
+                                panOffset += centroid - prevCentroid!!
                                 val zoomFactor = distance / prevDistance!!
                                 val newScale = (scale * zoomFactor).coerceIn(MIN_SCALE, MAX_SCALE)
-                                val worldAtCentroid = screenToWorld(centroid) // anchor zoom under fingers
+                                val worldAtCentroid = screenToWorld(centroid)
                                 scale = newScale
                                 panOffset = Offset(
                                     centroid.x - worldAtCentroid.x * newScale,
@@ -950,37 +1054,52 @@ fun RoomEditor(
                             event.changes.forEach { it.consume() }
                             dragPoint = null
 
-                        } else if (pressed.size == 1 && !isTransforming && !shapeComplete) {
-                            // --- One-finger drawing ---
+                        } else if (pressed.size == 1 && !isTransforming) {
                             val change = pressed[0]
                             val pos = change.position
                             if ((pos - downPos).getDistance() > TAP_SLOP) moved = true
-                            dragPoint = snap(screenToWorld(pos), snapCandidates())
+
+                            if (placingDevice) {
+                                dragPoint = screenToWorld(pos)
+                            } else if (!shapeComplete) {
+                                dragPoint = snap(screenToWorld(pos), snapCandidates())
+                            }
                             change.consume()
 
                         } else if (pressed.isEmpty()) {
-                            // --- Finger(s) lifted: finalize ---
-                            if (!isTransforming && !shapeComplete) {
-                                if (lastPoint == null) {
-                                    // First point of the room: commit wherever we ended up (snapped).
-                                    val placed = dragPoint ?: snap(screenToWorld(downPos), snapCandidates())
-                                    firstPoint = placed
-                                    lastPoint = placed
-                                } else if (moved) {
-                                    val end = dragPoint
-                                    val start = lastPoint
-                                    if (end != null && start != null) {
-                                        val begin = firstPoint
-                                        val isNearStart =
-                                            begin != null &&
-                                                    end.x > begin.x - 20f && end.x < begin.x + 20f &&
-                                                    end.y > begin.y - 20f && end.y < begin.y + 20f
-                                        val newWall = if (isNearStart) Wall(start, begin!!) else Wall(start, end)
-                                        val updated = walls + newWall
-                                        walls = updated
-                                        lastPoint = newWall.end
-                                        onWallsChanged(updated)
-                                        if (isNearStart) onShapeComplete(true)
+                            if (!isTransforming) {
+                                if (placingDevice) {
+                                    if (!moved) {
+                                        onDevicePointSelected(screenToWorld(downPos))
+                                    }
+                                } else {
+                                    val tapWorld = dragPoint ?: screenToWorld(downPos)
+                                    val clickedDevice = if (!moved) findClosestDevice(tapWorld, devicePlacements) else null
+
+                                    if (clickedDevice != null) {
+                                        onDeviceClicked(clickedDevice.placement)
+                                    } else if (!shapeComplete) {
+                                        if (lastPoint == null) {
+                                            val placed = dragPoint ?: snap(screenToWorld(downPos), snapCandidates())
+                                            firstPoint = placed
+                                            lastPoint = placed
+                                        } else if (moved) {
+                                            val end = dragPoint
+                                            val start = lastPoint
+                                            if (end != null && start != null) {
+                                                val begin = firstPoint
+                                                val isNearStart =
+                                                    begin != null &&
+                                                            end.x > begin.x - 20f && end.x < begin.x + 20f &&
+                                                            end.y > begin.y - 20f && end.y < begin.y + 20f
+                                                val newWall = if (isNearStart) Wall(start, begin!!) else Wall(start, end)
+                                                val updated = walls + newWall
+                                                walls = updated
+                                                lastPoint = newWall.end
+                                                onWallsChanged(updated)
+                                                if (isNearStart) onShapeComplete(true)
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -997,7 +1116,6 @@ fun RoomEditor(
             translate(left = panOffset.x, top = panOffset.y)
             scale(scaleX = scale, scaleY = scale, pivot = Offset.Zero)
         }) {
-            // Other rooms on this floor -- translucent context only.
             backgroundWalls.forEach { wall ->
                 drawLine(
                     color = Color.Black, alpha = 0.2f,
@@ -1007,7 +1125,6 @@ fun RoomEditor(
                 )
             }
 
-            // This room's committed walls.
             walls.forEach { wall ->
                 drawLine(
                     color = Color.Black,
@@ -1017,8 +1134,7 @@ fun RoomEditor(
                 )
             }
 
-            // Live preview segment while drawing.
-            if (!shapeComplete && lastPoint != null && dragPoint != null) {
+            if (!shapeComplete && !placingDevice && lastPoint != null && dragPoint != null) {
                 drawLine(
                     color = Color.Black, alpha = 0.4f,
                     start = Offset(lastPoint!!.x, lastPoint!!.y),
@@ -1027,9 +1143,24 @@ fun RoomEditor(
                 )
             }
 
-            // Marker for the first point once placed, before any wall exists.
             if (!shapeComplete && firstPoint != null && walls.isEmpty()) {
                 drawCircle(color = Color.Red, radius = 8f, center = Offset(firstPoint!!.x, firstPoint!!.y))
+            }
+
+            devicePlacements.forEach { pd ->
+                drawCircle(
+                    color = Color(0xFFFFA500),
+                    radius = 10f,
+                    center = Offset(pd.placement.position.x, pd.placement.position.y)
+                )
+            }
+
+            if (placingDevice && dragPoint != null) {
+                drawCircle(
+                    color = Color(0xFFFFA500), alpha = 0.5f,
+                    radius = 10f,
+                    center = Offset(dragPoint!!.x, dragPoint!!.y)
+                )
             }
 
             snapX?.let { x ->
@@ -1037,6 +1168,20 @@ fun RoomEditor(
             }
             snapY?.let { y ->
                 drawLine(color = Color.Blue, alpha = 0.4f, start = Offset(-10000f, y), end = Offset(10000f, y), strokeWidth = 3f / scale)
+            }
+
+            drawContext.canvas.nativeCanvas.apply {
+                devicePlacements.forEach { pd ->
+                    drawText(
+                        pd.label,
+                        pd.placement.position.x + 14f,
+                        pd.placement.position.y,
+                        android.graphics.Paint().apply {
+                            color = android.graphics.Color.WHITE
+                            textSize = 24f / scale
+                        }
+                    )
+                }
             }
         }
     }

@@ -51,7 +51,7 @@ import androidx.compose.runtime.mutableStateListOf
 data class Device(
     val id: Int,      // e.g. "Lamp1"
     val type: String,    // e.g. "Light"
-    val name: String,    // e.g. "Light"
+    val ngame: String,    // e.g. "Light"
     val state: String,   // "on" or "off"
     val path: String      // where in Firebase to write updates, e.g. "Floors/F1/Rooms/Bedroom/Lights"
 )
