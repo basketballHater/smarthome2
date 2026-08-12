@@ -51,7 +51,7 @@ import androidx.compose.runtime.mutableStateListOf
 data class Device(
     val id: Int,      // e.g. "Lamp1"
     val type: String,    // e.g. "Light"
-    val ngame: String,    // e.g. "Light"
+    val name: String,    // e.g. "Light"
     val state: String,   // "on" or "off"
     val path: String      // where in Firebase to write updates, e.g. "Floors/F1/Rooms/Bedroom/Lights"
 )
@@ -72,7 +72,8 @@ data class VirtualDevice(
     val id: String,          // you generate this, e.g. "vdev1"
     val customName: String,  // name the user picks
     val linkedPath: String?,  // path of the real Device it's mapped to, null = not mapped yet
-    val wattage: Double
+    val wattage: Double,
+    val position: Point
 )
 
 data class VirtualRoom(

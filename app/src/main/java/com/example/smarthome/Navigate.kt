@@ -609,23 +609,24 @@ fun Navigate(modifier: Modifier = Modifier) {
             deviceDialogRoomId = null
         }) {
             Surface(shape = RoundedCornerShape(16.dp)) {
-                AddVirtualObjectScreen(
-                    context = context,
-                    objectType = objectType,
-                    floor = selectedFloor,
-                    placementRoomId = deviceDialogRoomId,
-                    placementPosition = pendingDevicePosition,
-                    onDone = {
-                        showAddDialog = false
-                        pendingDevicePosition = null
-                        deviceDialogRoomId = null
-                    }
-                )
+                val position = pendingDevicePosition
+                if (position != null) {
+                    AddVirtualObjectScreen(
+                        context = context,
+                        objectType = objectType,
+                        floor = selectedFloor,
+                        placementRoomId = deviceDialogRoomId,
+                        placementPosition = position,
+                        onDone = {
+                            showAddDialog = false
+                            pendingDevicePosition = null
+                            deviceDialogRoomId = null
+                        }
+                    )
+                }
             }
         }
     }
-
-
 }
 
 fun safeRooms(list: MutableList<VirtualRoom>?): MutableList<VirtualRoom> = list ?: mutableListOf()
@@ -635,7 +636,7 @@ fun AddVirtualObjectScreen(
     objectType: Int,
     floor: Int,
     placementRoomId: String? = null,
-    placementPosition: Point? = null,
+    placementPosition: Point,
     onDone: () -> Unit
 ) {
     var customName by remember { mutableStateOf("") }
@@ -645,13 +646,12 @@ fun AddVirtualObjectScreen(
     var selectedFloor by remember { mutableStateOf<Floor?>(null) }
 
     Column(modifier = Modifier.padding(16.dp)) {
-        if (placementPosition != null) {
             Text(
                 text = "Placing device at (${placementPosition.x.toInt()}, ${placementPosition.y.toInt()})",
                 fontWeight = FontWeight.Bold
             )
             Spacer(modifier = Modifier.height(8.dp))
-        }
+
 
         OutlinedTextField(
             value = customName,
@@ -739,14 +739,23 @@ fun AddVirtualObjectScreen(
                 Button(
                     onClick = {
                         if (customName.isNotBlank() && selectedDevice != null) {
-                            AppData.virtualDeviceList.add(
-                                VirtualDevice(
-                                    id = "vdev${AppData.virtualDeviceList.size + 1}",
-                                    customName = customName,
-                                    linkedPath = selectedDevice!!.path,
-                                    wattage = wattage
-                                )
+                            val newId = "vdev${AppData.virtualDeviceList.size + 1}"
+                            val newVirtualDevice = VirtualDevice(
+                                id = newId,
+                                customName = customName,
+                                linkedPath = selectedDevice!!.path,
+                                wattage = wattage,
+                                position = placementPosition
                             )
+                            AppData.virtualDeviceList.add(newVirtualDevice)
+
+                            // NEW: actually attach this placement to the room it was placed in
+                            if (placementRoomId != null) {
+                                updateRoom(floor, placementRoomId) { r ->
+                                    r.copy(devices = r.devices + DevicePlacement(newId, placementPosition))
+                                }
+                            }
+
                             VirtualStorage.save(context)
                             onDone()
                         }
@@ -756,6 +765,7 @@ fun AddVirtualObjectScreen(
                     Text("Save Mapping")
                 }
             }
+
         }
     }
 }
