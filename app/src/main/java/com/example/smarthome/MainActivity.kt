@@ -39,8 +39,11 @@ import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
 import android.content.Context
+import androidx.compose.runtime.mutableStateListOf
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import androidx.compose.runtime.snapshots.SnapshotStateList
+import androidx.compose.runtime.mutableStateListOf
 
 
 // A plain data holder representing ONE device (a light, a camera, etc).
@@ -59,29 +62,36 @@ data class Floor(
     val path: String      // where in Firebase to write updates, e.g. "Floors/F1/Rooms/Bedroom/Lights"
 )
 data class Room(
-    val id: Int,      // e.g. "Lamp1"
-    val name : String,
-    val floorId: Int,// e.g. "Light"
-    val path: String      // where in Firebase to write updates, e.g. "Floors/F1/Rooms/Bedroom/Lights"
+    val id: Int,
+    val name: String,
+    val floorId: Int,
+    val path: String
 )
 
 data class VirtualDevice(
     val id: String,          // you generate this, e.g. "vdev1"
     val customName: String,  // name the user picks
     val linkedPath: String?,  // path of the real Device it's mapped to, null = not mapped yet
-    val wattage: Double
+    val wattage: Double,
+    val position: Point
 )
 
 data class VirtualRoom(
     val id: String,
     val customName: String,
-    val linkedPath: String?
+    val linkedPath: String?,
+    val floorId: Int,
+    var walls: List<Wall> = emptyList(),
+    var wallSet: Boolean = false,
+    var doors: List<Door> = emptyList(),
+    var devices: List<DevicePlacement> = emptyList()
 )
 
 data class VirtualFloor(
     val id: String,
     val customName: String,
-    val linkedPath: String?
+    val linkedPath: String?,
+    val rooms: MutableList<VirtualRoom> = mutableListOf()
 )
 
 class MainActivity : ComponentActivity() {
@@ -209,8 +219,11 @@ object VirtualStorage {
         }
         prefs.getString("floors", null)?.let { json ->
             val type = object : TypeToken<List<VirtualFloor>>() {}.type
+            val loaded: List<VirtualFloor> = gson.fromJson(json, type)
             AppData.virtualFloorList.clear()
-            AppData.virtualFloorList.addAll(gson.fromJson(json, type))
+            // Gson can leave rooms == null if the field was missing/broken in old saved data.
+            // Normalize here so nothing downstream ever has to null-check again.
+            AppData.virtualFloorList.addAll(loaded.map { it.copy(rooms = it.rooms ?: mutableListOf()) })
         }
     }
 }
@@ -248,9 +261,7 @@ fun SmartHomeScreen(modifier: Modifier = Modifier) {
                     roomsSnap.children.forEachIndexed { index, roomSnap ->
                         val roomId = roomSnap.key ?: return@forEachIndexed
                         val categories = listOf("Cameras", "Lights", "Acs", "Outlets")
-                        newList2.add(
-                            Room(id = index, name = "$floorNum-$roomId",floorId = floorNum, path = "Floors/$floorId/Rooms/$roomId"  )
-                        )
+                            Room(id = index, name = "$floorNum-$roomId",floorId = floorNum ,path = "Floors/$floorId/Rooms/$roomId"  )
                         val roomNum = index
                         for (category in categories) {
                             val typeLabel = category.dropLast(1)
