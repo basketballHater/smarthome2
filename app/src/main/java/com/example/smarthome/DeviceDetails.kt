@@ -1,6 +1,7 @@
 package com.example.smarthome
 
 import android.util.Log
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -89,85 +90,107 @@ private val categoryLabelToFirebaseKey = mapOf(
 )
 
 // ===================================================================
-// DATA MODEL: one entry per device, carrying its floor/room/category
-// so the screen can filter purely on this list -- no re-querying
-// Firebase every time a dropdown changes.
+// DATA MODEL: one entry per VIRTUAL device (from AppData.virtualDeviceList),
+// carrying the custom name/wattage the user gave it plus the floor/room/
+// category parsed out of its linkedPath. This is now the single source of
+// truth for the floor dropdown, room dropdown, category chips, and the
+// connected-devices list -- we no longer scan Firebase's Floors tree
+// directly to build this screen's structure.
 // ===================================================================
 data class DeviceEntry(
-    val id: String,
-    val category: String,   // plural Firebase key, e.g. "Lights"
-    val typeLabel: String,  // singular display label, e.g. "Light"
-    val state: String,      // "on" / "off"
+    val virtualId: String,   // AppData.virtualDeviceList entry's id
+    val customName: String,  // user-given name, e.g. "Reading Lamp"
+    val wattage: Double,
+    val category: String,    // plural Firebase key, parsed from linkedPath, e.g. "Lights"
+    val typeLabel: String,   // singular display label, e.g. "Light"
     val floorId: String,
     val roomId: String,
-    val parentPath: String  // "Floors/{floorId}/Rooms/{roomId}/{category}" -- no id/state suffix
+    val linkedPath: String,  // real Firebase path: "Floors/{floorId}/Rooms/{roomId}/{category}/{deviceId}"
+    val floorName: String?,  // custom name from AppData.virtualFloorList, null if not saved
+    val roomName: String?    // custom name from AppData.virtualRoomList, null if not saved
 )
 
 /**
- * Loads the ENTIRE Floors tree once and keeps it live-updated.
- * This is the single source of truth that the floor dropdown, room dropdown,
- * category chips, and connected-devices list all filter against locally.
+ * Builds the device list purely from AppData.virtualDeviceList -- no Firebase
+ * read here at all. AppData.virtualDeviceList is a mutableStateListOf, so Compose
+ * already recomposes this whenever it changes; we just need to read it.
+ *
+ * Virtual devices whose linkedPath is null (not yet mapped to a real device)
+ * are skipped, since there's no real device to show state for or toggle.
  */
 @Composable
-fun rememberAllDeviceEntries(): List<DeviceEntry> {
-    var entries by remember { mutableStateOf(listOf<DeviceEntry>()) }
+fun rememberVirtualDeviceEntries(): List<DeviceEntry> {
+    return AppData.virtualDeviceList.mapNotNull { vd ->
+        val path = vd.linkedPath ?: return@mapNotNull null
+        // Expected shape: "Floors/{floorId}/Rooms/{roomId}/{category}/{deviceId}"
+        val parts = path.split("/")
+        if (parts.size < 6) return@mapNotNull null
+        val category = parts[4]
+        DeviceEntry(
+            virtualId = vd.id,
+            customName = vd.customName,
+            wattage = vd.wattage,
+            category = category,
+            typeLabel = category.dropLast(1),
+            floorId = parts[1],
+            roomId = parts[3],
+            linkedPath = path,
+            floorName = virtualFloorNameForPath(path),
+            roomName = virtualRoomNameForPath(path)
+        )
+    }
+}
 
-    DisposableEffect(Unit) {
-        val devicesRef = FirebaseDatabase.getInstance().getReference("Floors")
+/**
+ * Live on/off state for a single real device, read from "{linkedPath}/state".
+ * Shared by the top card and every connected-device row so each subscribes
+ * only to the one path it actually needs instead of one big multi-path listener.
+ */
+@Composable
+fun rememberDeviceState(linkedPath: String): String {
+    var state by remember(linkedPath) { mutableStateOf("off") }
+
+    DisposableEffect(linkedPath) {
+        val ref = FirebaseDatabase.getInstance().getReference("$linkedPath/state")
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
-                if (!snapshot.exists()) {
-                    entries = emptyList()
-                    return
-                }
-                val newList = mutableListOf<DeviceEntry>()
-
-                for (floorSnap in snapshot.children) {
-                    val floorId = floorSnap.key ?: continue
-                    val roomsSnap = floorSnap.child("Rooms")
-
-                    for (roomSnap in roomsSnap.children) {
-                        val roomId = roomSnap.key ?: continue
-                        val categories = listOf("Cameras", "Lights", "Acs", "Outlets")
-
-                        for (category in categories) {
-                            val typeLabel = category.dropLast(1)
-                            val categorySnap = roomSnap.child(category)
-
-                            for (deviceSnap in categorySnap.children) {
-                                val deviceId = deviceSnap.key ?: continue
-                                val state = deviceSnap.child("state")
-                                    .getValue(String::class.java) ?: "off"
-                                val parentPath = "Floors/$floorId/Rooms/$roomId/$category"
-
-                                newList.add(
-                                    DeviceEntry(
-                                        id = deviceId,
-                                        category = category,
-                                        typeLabel = typeLabel,
-                                        state = state,
-                                        floorId = floorId,
-                                        roomId = roomId,
-                                        parentPath = parentPath
-                                    )
-                                )
-                            }
-                        }
-                    }
-                }
-                entries = newList
+                state = snapshot.getValue(String::class.java) ?: "off"
             }
 
             override fun onCancelled(error: DatabaseError) {
-                Log.e("SMARTHOME", "Failed to read Floors tree", error.toException())
+                Log.e("DEVICE_DETAIL", "Failed to read $linkedPath/state", error.toException())
             }
         }
-        devicesRef.addValueEventListener(listener)
-        onDispose { devicesRef.removeEventListener(listener) }
+        ref.addValueEventListener(listener)
+        onDispose { ref.removeEventListener(listener) }
     }
 
-    return entries
+    return state
 }
+
+fun toggleDeviceState(linkedPath: String, isChecked: Boolean) {
+    val newState = if (isChecked) "on" else "off"
+    FirebaseDatabase.getInstance()
+        .getReference("$linkedPath/state")
+        .setValue(newState)
+        .addOnFailureListener { e ->
+            Log.e("DEVICE_DETAIL", "Failed to update $linkedPath/state", e)
+        }
+}
+
+// Resolves a real device path to the custom name of the SAVED virtual floor
+// it falls under, by checking which virtualFloorList entry's linkedPath is a
+// prefix of the device path. Returns null if that floor was never saved.
+private fun virtualFloorNameForPath(devicePath: String): String? =
+    AppData.virtualFloorList.firstOrNull { floor ->
+        floor.linkedPath?.let { devicePath.startsWith("$it/") } == true
+    }?.customName
+
+// Same idea, for the SAVED virtual room.
+private fun virtualRoomNameForPath(devicePath: String): String? =
+    AppData.virtualRoomList.firstOrNull { room ->
+        room.linkedPath?.let { devicePath.startsWith("$it/") } == true
+    }?.customName
 
 // ===================================================================
 // FILTERS: floor/room dropdown pills + category chip row
@@ -385,20 +408,21 @@ private fun iconFor(category: String) = when (category) {
 @Composable
 fun ConnectedDeviceRow(
     entry: DeviceEntry,
-    onToggle: (Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val state = rememberDeviceState(entry.linkedPath)
+
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .background(SmartHomeColors.StatBoxBackground, RoundedCornerShape(14.dp))
+            .background(SmartHomeColors.IconCircleBackground, RoundedCornerShape(14.dp))
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
                 .size(32.dp)
-                .background(SmartHomeColors.IconCircleBackground, CircleShape),
+                .background(SmartHomeColors.CardBackground, CircleShape),
             contentAlignment = Alignment.Center
         ) {
             Icon(
@@ -410,12 +434,12 @@ fun ConnectedDeviceRow(
         }
         Spacer(modifier = Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(text = "${entry.typeLabel}: ${entry.id}", color = SmartHomeColors.TextSecondary, fontSize = 14.sp)
-            Text(text = "${entry.floorId} · ${entry.roomId}", color = SmartHomeColors.TextSecondary.copy(alpha = 0.6f), fontSize = 11.sp)
+            Text(text = entry.customName, color = SmartHomeColors.TextPrimary, fontSize = 14.sp)
+            Text(text = "${entry.floorName ?: entry.floorId} · ${entry.roomName ?: entry.roomId}", color = SmartHomeColors.TextPrimary.copy(alpha = 0.6f), fontSize = 11.sp)
         }
         Switch(
-            checked = entry.state == "on",
-            onCheckedChange = onToggle,
+            checked = state == "on",
+            onCheckedChange = { isChecked -> toggleDeviceState(entry.linkedPath, isChecked) },
             colors = SwitchDefaults.colors(
                 checkedTrackColor = SmartHomeColors.AccentTeal,
                 checkedThumbColor = SmartHomeColors.TextPrimary,
@@ -442,74 +466,127 @@ fun DeviceDetailScreen(
     deviceId: String,
     modifier: Modifier = Modifier
 ) {
-    // Full live list of every device in the house -- the single source of
-    // truth that floors/rooms/categories/connected-list all filter against.
-    val allDevices = rememberAllDeviceEntries()
+    var isEmpty by remember { mutableStateOf(false) }
 
-    // Pull the tapped device's floor/room straight out of its path:
-    // "Floors/{floorId}/Rooms/{roomId}/{category}"
-    val pathParts = devicePath.split("/")
-    val initialFloor = pathParts.getOrNull(1) ?: ALL_FLOORS
-    val initialRoom = pathParts.getOrNull(3) ?: ALL_ROOMS
-
-    var device by remember { mutableStateOf<DeviceEntry?>(null) }
-    var selectedFloor by remember { mutableStateOf(initialFloor) }
-    var selectedRoom by remember { mutableStateOf(initialRoom) }
-    var selectedCategory by remember { mutableStateOf(ALL_CATEGORIES) }
-
-    // Keep the top card's device in sync with the live list (so toggling
-    // reflects immediately, same as the rest of the app).
-    DisposableEffect(devicePath, deviceId) {
-        val ref = FirebaseDatabase.getInstance().getReference("$devicePath/$deviceId")
+    DisposableEffect(Unit) {
+        val devicesRef = FirebaseDatabase.getInstance().getReference("Floors")
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
-                val state = snapshot.child("state").getValue(String::class.java) ?: "off"
-                val category = pathParts.getOrNull(4) ?: "Lights"
-                device = DeviceEntry(
-                    id = deviceId,
-                    category = category,
-                    typeLabel = category.dropLast(1),
-                    state = state,
-                    floorId = initialFloor,
-                    roomId = initialRoom,
-                    parentPath = devicePath
-                )
+                if (!snapshot.exists()) {
+                    isEmpty = true
+                    AppData.deviceList.clear()
+                    return
+                }
+                isEmpty = false
+                val newList1 = mutableStateListOf<Device>()
+                val newList2 = mutableStateListOf<Room>()
+                val newList3 = mutableStateListOf<Floor>()
+
+                var roomNum = 0
+                var floorNum = 0
+
+
+                snapshot.children.forEachIndexed { index, floorSnap ->
+                    val floorId = floorSnap.key ?: return@forEachIndexed
+                    newList3.add(
+                        Floor(id = index, name = floorId,path = "Floors/$floorId"  )
+                    )
+                    val floorNum = index
+                    val roomsSnap = floorSnap.child("Rooms")
+                    roomsSnap.children.forEachIndexed { index, roomSnap ->
+                        val roomId = roomSnap.key ?: return@forEachIndexed
+                        val categories = listOf("Cameras", "Lights", "Acs", "Outlets")
+                        newList2.add(
+                            Room(id = index, name = "$floorNum-$roomId",floorId = floorNum ,path = "Floors/$floorId/Rooms/$roomId"  )
+                        )
+                        val roomNum = index
+                        for (category in categories) {
+                            val typeLabel = category.dropLast(1)
+                            val categorySnap = roomSnap.child(category)
+
+                            categorySnap.children.forEachIndexed { index, deviceSnap ->
+                                val devName = deviceSnap.key
+                                val state = deviceSnap.child("state")
+                                    .getValue(String::class.java) ?: "off"
+                                val path = "Floors/$floorId/Rooms/$roomId/$category/$devName"
+
+                                newList1.add(
+                                    Device(id = index, name ="F-$floorNum-R-$roomNum-$typeLabel-$index", type = typeLabel, state = state, path = path)
+                                )
+                            }
+                        }
+                    }
+                }
+                AppData.deviceList = newList1
+                AppData.roomList = newList2
+                AppData.floorList = newList3
             }
 
             override fun onCancelled(error: DatabaseError) {
-                Log.e("DEVICE_DETAIL", "Failed to read $devicePath/$deviceId", error.toException())
+                Log.e("SMARTHOME", "Firebase read failed", error.toException())
             }
         }
-        ref.addValueEventListener(listener)
-        onDispose { ref.removeEventListener(listener) }
+        devicesRef.addValueEventListener(listener)
+        onDispose { devicesRef.removeEventListener(listener) }
     }
 
-    // --- Dropdown option lists, derived live from Firebase data ---
-    val floorOptions = listOf(ALL_FLOORS) + allDevices.map { it.floorId }.distinct().sorted()
-    val roomOptions = listOf(ALL_ROOMS) + allDevices
-        .filter { selectedFloor == ALL_FLOORS || it.floorId == selectedFloor }
-        .map { it.roomId }
-        .distinct()
-        .sorted()
-
-    // --- The filtered "connected devices" list ---
-    val requestedCategoryKey = categoryLabelToFirebaseKey[selectedCategory] // null == "All"
-    val connectedDevices = allDevices.filter { entry ->
-        val matchesFloor = selectedFloor == ALL_FLOORS || entry.floorId == selectedFloor
-        val matchesRoom = selectedRoom == ALL_ROOMS || entry.roomId == selectedRoom
-        val matchesCategory = requestedCategoryKey == null || entry.category == requestedCategoryKey
-        val isTheCardDevice = entry.id == deviceId && entry.parentPath == devicePath
-        matchesFloor && matchesRoom && matchesCategory && !isTheCardDevice
-    }
-
-    fun toggleDevice(entry: DeviceEntry, isChecked: Boolean) {
-        val newState = if (isChecked) "on" else "off"
-        FirebaseDatabase.getInstance()
-            .getReference("${entry.parentPath}/${entry.id}/state")
-            .setValue(newState)
-            .addOnFailureListener { e ->
-                Log.e("DEVICE_DETAIL", "Failed to update ${entry.parentPath}/${entry.id}/state", e)
+    if (isEmpty) {
+        Text(
+            text = "No data found at 'Floors'. Check your Firebase path/rules.",
+            modifier = modifier.padding(16.dp)
+        )
+    } else {
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp)
+        ) {
+            for (device in AppData.deviceList) {
+                DeviceRow(device = device)
             }
+        }
+    }
+    // The device list, floor list, and room list all now come from the
+    // VIRTUAL layer (AppData.virtualDeviceList) instead of scanning Firebase's
+    // Floors tree directly -- this reflects whatever devices have been
+    // added/named/mapped via the virtual device screen.
+    val virtualDevices = rememberVirtualDeviceEntries()
+        .filter { it.floorName != null && it.roomName != null }
+
+    val pathParts = devicePath.split("/")
+    val fullDevicePath = "$devicePath/$deviceId"
+
+    val initialFloorName = virtualFloorNameForPath(fullDevicePath) ?: ALL_FLOORS
+    val initialRoomName = virtualRoomNameForPath(fullDevicePath) ?: ALL_ROOMS
+
+    var selectedFloor by remember { mutableStateOf(initialFloorName) }
+    var selectedRoom by remember { mutableStateOf(initialRoomName) }
+    var selectedCategory by remember { mutableStateOf(ALL_CATEGORIES) }
+
+    val matchingVirtual = virtualDevices.find { it.linkedPath == fullDevicePath }
+    val cardCategory = matchingVirtual?.category ?: (pathParts.getOrNull(4) ?: "Lights")
+    val cardName = matchingVirtual?.customName ?: deviceId
+    val cardState = rememberDeviceState(fullDevicePath)
+
+// --- Dropdown option lists, now driven by the SAVED virtual floors/rooms ---
+    val floorOptions = listOf(ALL_FLOORS) + AppData.virtualFloorList.map { it.customName }.distinct().sorted()
+
+    val selectedVirtualFloor = AppData.virtualFloorList.find { it.customName == selectedFloor }
+    val roomOptions = listOf(ALL_ROOMS) + AppData.virtualRoomList.filter { room ->
+        selectedFloor == ALL_FLOORS ||
+                (selectedVirtualFloor?.linkedPath != null &&
+                        room.linkedPath?.startsWith("${selectedVirtualFloor.linkedPath}/") == true)
+    }.map { it.customName }.distinct().sorted()
+
+// --- The filtered "connected devices" list, matched by saved custom names ---
+    val requestedCategoryKey = categoryLabelToFirebaseKey[selectedCategory]
+    val connectedDevices = virtualDevices.filter { entry ->
+        val matchesFloor = selectedFloor == ALL_FLOORS || entry.floorName == selectedFloor
+        val matchesRoom = selectedRoom == ALL_ROOMS || entry.roomName == selectedRoom
+        val matchesCategory = requestedCategoryKey == null || entry.category == requestedCategoryKey
+        val isTheCardDevice = entry.linkedPath == fullDevicePath
+        matchesFloor && matchesRoom && matchesCategory && !isTheCardDevice
     }
 
     Column(
@@ -520,32 +597,17 @@ fun DeviceDetailScreen(
             .padding(16.dp)
     ) {
 
-        val currentDevice = device
-        if (currentDevice == null) {
-            Text("Loading device...",
-                color = SmartHomeColors.TextPrimary,
-                fontSize = 14.sp,)
-        } else {
-            DeviceDetailCard(
-                deviceName = currentDevice.id,
-                location = "${currentDevice.floorId} · ${currentDevice.roomId}",
-                category = currentDevice.category,
-                isOn = currentDevice.state == "on",
-                onToggle = { isChecked -> toggleDevice(currentDevice, isChecked) },
-                todayUsageKwh = "—",
-                onForLabel = "—"
-            )
-        }
+        DeviceDetailCard(
+            deviceName = cardName,
+            location = "${matchingVirtual?.floorName ?: initialFloorName} · ${matchingVirtual?.roomName ?: initialRoomName}",
+            category = cardCategory,
+            isOn = cardState == "on",
+            onToggle = { isChecked -> toggleDeviceState(fullDevicePath, isChecked) },
+            todayUsageKwh = matchingVirtual?.let { "${it.wattage} W" } ?: "—",
+            onForLabel = "—"
+        )
 
         Spacer(modifier = Modifier.height(16.dp))
-
-        Text(
-            text = "Other Devices...",
-            color = SmartHomeColors.TextPrimary,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.SemiBold
-        )
-        Spacer(modifier = Modifier.height(8.dp))
 
         FloorRoomSelector(
             selectedFloor = selectedFloor,
@@ -570,6 +632,14 @@ fun DeviceDetailScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
+        Text(
+            text = "Connected devices",
+            color = SmartHomeColors.TextPrimary,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
         if (connectedDevices.isEmpty()) {
             Text(
                 text = "No other devices match this filter.",
@@ -579,10 +649,7 @@ fun DeviceDetailScreen(
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 connectedDevices.forEach { entry ->
-                    ConnectedDeviceRow(
-                        entry = entry,
-                        onToggle = { isChecked -> toggleDevice(entry, isChecked) }
-                    )
+                    ConnectedDeviceRow(entry = entry)
                 }
             }
         }

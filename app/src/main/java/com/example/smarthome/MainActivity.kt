@@ -55,12 +55,13 @@ data class Device(
 
 data class Floor(
     val id: Int,      // e.g. "Lamp1"
-    val name : String,    // e.g. "Light"
+    val name : String, // e.g. "Light"
     val path: String      // where in Firebase to write updates, e.g. "Floors/F1/Rooms/Bedroom/Lights"
 )
 data class Room(
     val id: Int,      // e.g. "Lamp1"
-    val name : String,    // e.g. "Light"
+    val name : String,
+    val floorId: Int,// e.g. "Light"
     val path: String      // where in Firebase to write updates, e.g. "Floors/F1/Rooms/Bedroom/Lights"
 )
 
@@ -138,13 +139,6 @@ fun Main(){
                     icon = { Icon(Icons.Filled.Settings, contentDescription = "Configurations") },
                     label = { Text("Config") }
                 )
-
-                NavigationBarItem(
-                    selected = selectedTab == 3,
-                    onClick = { selectedTab = 3 },
-                    icon = { Icon(Icons.Filled.Search, contentDescription = "Configurations") },
-                    label = { Text("Navigation") }
-                )
             }
         }
     ) { innerPadding ->
@@ -171,11 +165,6 @@ fun Main(){
             3 -> {
                 Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
                     Text("Configurations page coming soon", modifier = Modifier.padding(16.dp))
-                }
-            }
-            3 -> {
-                Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-                    Text("Navigation page coming soon", modifier = Modifier.padding(16.dp))
                 }
             }
         }
@@ -260,7 +249,7 @@ fun SmartHomeScreen(modifier: Modifier = Modifier) {
                         val roomId = roomSnap.key ?: return@forEachIndexed
                         val categories = listOf("Cameras", "Lights", "Acs", "Outlets")
                         newList2.add(
-                            Room(id = index, name = "$floorNum-$roomId",path = "Floors/$floorId/Rooms/$roomId"  )
+                            Room(id = index, name = "$floorNum-$roomId",floorId = floorNum, path = "Floors/$floorId/Rooms/$roomId"  )
                         )
                         val roomNum = index
                         for (category in categories) {
