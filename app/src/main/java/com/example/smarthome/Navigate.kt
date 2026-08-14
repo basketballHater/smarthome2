@@ -187,7 +187,7 @@ fun Navigate(modifier: Modifier = Modifier, onDeviceSelected: (devicePath: Strin
                 fontStyle = FontStyle.Normal,
                 textAlign = TextAlign.Center
             )
-            if (AppData.virtualFloorList.isNotEmpty()) {
+
 
                 LazyRow(
                     modifier = Modifier
@@ -196,39 +196,41 @@ fun Navigate(modifier: Modifier = Modifier, onDeviceSelected: (devicePath: Strin
                         .padding(5.dp)
 
                 ) {
-                    items(AppData.virtualFloorList.size) { index ->
+                    if (AppData.virtualFloorList.isNotEmpty()) {
+                        items(AppData.virtualFloorList.size) { index ->
 
-                        val floor = AppData.virtualFloorList[index]
+                            val floor = AppData.virtualFloorList[index]
 
-                        Column(
-                            modifier = Modifier
-                                .padding(2.dp)
-                                .width(80.dp)
-                                .combinedClickable(
-                                    onClick = {
-                                        selectedFloor = index
-                                        selectedRoom = 0
-                                    },
-                                    onLongClick = { floorPendingDelete = floor }
+                            Column(
+                                modifier = Modifier
+                                    .padding(2.dp)
+                                    .width(80.dp)
+                                    .combinedClickable(
+                                        onClick = {
+                                            selectedFloor = index
+                                            selectedRoom = 0
+                                        },
+                                        onLongClick = { floorPendingDelete = floor }
+                                    )
+                                    .height(60.dp)
+                                    .background(
+                                        color = if (selectedFloor == index)
+                                            Color(0xFF1E5E6E)
+                                        else
+                                            Color.Transparent,
+                                        shape = RoundedCornerShape(16.dp)
+                                    ),
+                                verticalArrangement = Arrangement.Center,
+
+                                ) {
+                                Text(
+                                    text = floor.customName,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth(),
                                 )
-                                .height(60.dp)
-                                .background(
-                                    color = if (selectedFloor == index)
-                                        Color(0xFF1E5E6E)
-                                    else
-                                        Color.Transparent,
-                                    shape = RoundedCornerShape(16.dp)
-                                ),
-                            verticalArrangement = Arrangement.Center,
-
-                            ) {
-                            Text(
-                                text = floor.customName,
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
+                            }
                         }
                     }
 
@@ -248,7 +250,7 @@ fun Navigate(modifier: Modifier = Modifier, onDeviceSelected: (devicePath: Strin
                                 contentDescription = "Add"
                             )
                         }
-                    }
+
                 }
             }
 
@@ -271,9 +273,9 @@ fun Navigate(modifier: Modifier = Modifier, onDeviceSelected: (devicePath: Strin
                 ) {
                     // NEW
                     val currentRooms = safeRooms(AppData.virtualFloorList.getOrNull(selectedFloor)?.rooms)
-                    Log.d("NAVIGATE_DEBUG1", "selectedFloor=$selectedFloor, room count=${currentRooms.size}, rooms=$currentRooms")
-                    Log.d("NAVIGATE_DEBUG2", "bruh=${AppData.virtualFloorList[selectedFloor].rooms}")
-                    Log.d("NAVIGATE_DEBUG3", "bruh=${AppData.virtualFloorList.isNotEmpty()}, bruh=${currentRooms.isNotEmpty()}")
+//                    Log.d("NAVIGATE_DEBUG1", "selectedFloor=$selectedFloor, room count=${currentRooms.size}, rooms=$currentRooms")
+//                    Log.d("NAVIGATE_DEBUG2", "bruh=${AppData.virtualFloorList[selectedFloor].rooms}")
+//                    Log.d("NAVIGATE_DEBUG3", "bruh=${AppData.virtualFloorList.isNotEmpty()}, bruh=${currentRooms.isNotEmpty()}")
 
                     if (AppData.virtualFloorList.isNotEmpty() && currentRooms.isNotEmpty()) {
                         // NEW
