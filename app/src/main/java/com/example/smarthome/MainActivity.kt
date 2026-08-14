@@ -17,7 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -139,7 +139,12 @@ fun Main(){
                 NavigationBarItem(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
-                    icon = { Icon(Icons.Filled.Star, contentDescription = "Cameras") },
+                    icon = {
+                        Icon(
+                            Icons.Filled.Videocam,
+                            contentDescription = "Cameras"
+                        )
+                    },
                     label = { Text("Cameras") }
                 )
                 // --- Navigation Tab ---
@@ -172,9 +177,9 @@ fun Main(){
                 )
             }
             0 -> {
-                Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-                    Text("Navigations page coming soon", modifier = Modifier.padding(16.dp))
-                }
+                CameraScreen(
+                    modifier = Modifier.padding(innerPadding)
+                )
             }
             2 -> {
                 Navigate(modifier = Modifier.padding(innerPadding),
