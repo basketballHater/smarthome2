@@ -54,6 +54,15 @@ import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.delay
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.material3.TextButton
 
 // -----------------------------------------------------------------
 // Palette pulled from the "Connected Devices" screen mockup
@@ -110,6 +119,14 @@ data class DeviceEntry(
     val roomName: String?    // custom name from AppData.virtualRoomList, null if not saved
 )
 
+data class DeviceUsage(
+    val state: String,
+    val lastChangedAt: Long,
+    val usageDate: String,
+    val todayOnSeconds: Long
+)
+
+
 /**
  * Builds the device list purely from AppData.virtualDeviceList -- no Firebase
  * read here at all. AppData.virtualDeviceList is a mutableStateListOf, so Compose
@@ -146,7 +163,7 @@ fun rememberVirtualDeviceEntries(): List<DeviceEntry> {
  * Shared by the top card and every connected-device row so each subscribes
  * only to the one path it actually needs instead of one big multi-path listener.
  */
-@Composable
+/*@Composable
 fun rememberDeviceState(linkedPath: String): String {
     var state by remember(linkedPath) { mutableStateOf("off") }
 
@@ -166,16 +183,92 @@ fun rememberDeviceState(linkedPath: String): String {
     }
 
     return state
+}*/
+
+@Composable
+fun rememberDeviceUsage(linkedPath: String): DeviceUsage {
+    var usage by remember(linkedPath) {
+        mutableStateOf(DeviceUsage("off", System.currentTimeMillis(), currentDateString(), 0L))
+    }
+
+    DisposableEffect(linkedPath) {
+        val ref = FirebaseDatabase.getInstance().getReference(linkedPath)
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                usage = DeviceUsage(
+                    state = snapshot.child("state").getValue(String::class.java) ?: "off",
+                    lastChangedAt = snapshot.child("lastChangedAt").getValue(Long::class.java)
+                        ?: System.currentTimeMillis(),
+                    usageDate = snapshot.child("usageDate").getValue(String::class.java)
+                        ?: currentDateString(),
+                    todayOnSeconds = snapshot.child("todayOnSeconds").getValue(Long::class.java) ?: 0L
+                )
+            }
+            override fun onCancelled(error: DatabaseError) {
+                Log.e("DEVICE_DETAIL", "Failed to read $linkedPath", error.toException())
+            }
+        }
+        ref.addValueEventListener(listener)
+        onDispose { ref.removeEventListener(listener) }
+    }
+    return usage
 }
 
-fun toggleDeviceState(linkedPath: String, isChecked: Boolean) {
-    val newState = if (isChecked) "on" else "off"
-    FirebaseDatabase.getInstance()
-        .getReference("$linkedPath/state")
-        .setValue(newState)
-        .addOnFailureListener { e ->
-            Log.e("DEVICE_DETAIL", "Failed to update $linkedPath/state", e)
+// Recomposes callers once a minute so live durations keep advancing on screen
+@Composable
+fun rememberTicker(intervalMillis: Long = 60_000L): Long {
+    var tick by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(intervalMillis)
+            tick = System.currentTimeMillis()
         }
+    }
+    return tick
+}
+
+fun formatDuration(seconds: Long): String {
+    val h = seconds / 3600
+    val m = (seconds % 3600) / 60
+    return if (h > 0) "${h}h ${m}m" else "${m}m"
+}
+
+fun currentDateString(): String =
+    java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+
+fun toggleDeviceState(linkedPath: String, isChecked: Boolean) {
+    val ref = FirebaseDatabase.getInstance().getReference(linkedPath)
+    val now = System.currentTimeMillis()
+    val today = currentDateString()
+
+    ref.runTransaction(object : com.google.firebase.database.Transaction.Handler {
+        override fun doTransaction(data: com.google.firebase.database.MutableData): com.google.firebase.database.Transaction.Result {
+            val prevState = data.child("state").getValue(String::class.java) ?: "off"
+            val prevChangedAt = data.child("lastChangedAt").getValue(Long::class.java) ?: now
+            val prevUsageDate = data.child("usageDate").getValue(String::class.java) ?: today
+            val prevTodaySeconds = data.child("todayOnSeconds").getValue(Long::class.java) ?: 0L
+
+            var newTodaySeconds = if (prevUsageDate == today) prevTodaySeconds else 0L
+            if (prevState == "on") {
+                val elapsed = ((now - prevChangedAt) / 1000).coerceAtLeast(0)
+                newTodaySeconds += elapsed
+            }
+
+            data.child("state").value = if (isChecked) "on" else "off"
+            data.child("lastChangedAt").value = now
+            data.child("usageDate").value = today
+            data.child("todayOnSeconds").value = newTodaySeconds
+            return com.google.firebase.database.Transaction.success(data)
+        }
+
+        override fun onComplete(
+            error: DatabaseError?,
+            committed: Boolean,
+            snapshot: DataSnapshot?
+        ) {
+            if (error != null) Log.e("DEVICE_DETAIL", "Toggle failed for $linkedPath", error.toException())
+        }
+    })
 }
 
 // Resolves a real device path to the custom name of the SAVED virtual floor
@@ -301,69 +394,133 @@ fun DeviceDetailCard(
     onToggle: (Boolean) -> Unit,
     todayUsageKwh: String,
     onForLabel: String,
+    wattage: Double,
+    onSaveEdits: (newName: String, newWattage: Double) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var isEditing by remember { mutableStateOf(false) }
+    var editName by remember(deviceName, isEditing) { mutableStateOf(deviceName) }
+    var editWattageText by remember(wattage, isEditing) {
+        mutableStateOf(if (wattage > 0) wattage.toString() else "")
+    }
+
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = SmartHomeColors.CardBackground)
     ) {
-        Column(modifier = Modifier.padding(20.dp)) {
+        Box(modifier = Modifier.fillMaxWidth()) {
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp)
             ) {
-                Box(
+
+                Row(
                     modifier = Modifier
-                        .size(48.dp)
-                        .background(SmartHomeColors.IconCircleBackground, CircleShape),
-                    contentAlignment = Alignment.Center
+                        .fillMaxWidth()
+                        .padding(end = 32.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = iconFor(category),
-                        contentDescription = category,
-                        tint = SmartHomeColors.IconAsh,
-                        modifier = Modifier.size(22.dp)
-                    )
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .background(SmartHomeColors.IconCircleBackground, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = iconFor(category),
+                            contentDescription = category,
+                            tint = SmartHomeColors.IconAsh,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(14.dp))
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        if (isEditing) {
+                            OutlinedTextField(
+                                value = editName,
+                                onValueChange = { editName = it },
+                                label = { Text("Name") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else {
+                            Text(
+                                text = deviceName,
+                                color = SmartHomeColors.TextSecondary,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = if (wattage > 0) "$location · ${wattage.toInt()}W" else location,
+                                color = SmartHomeColors.TextLight,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+
+                    if (!isEditing) {
+                        Switch(
+                            checked = isOn,
+                            onCheckedChange = onToggle,
+                            colors = SwitchDefaults.colors(
+                                checkedTrackColor = SmartHomeColors.AccentTeal,
+                                checkedThumbColor = SmartHomeColors.TextPrimary,
+                                uncheckedTrackColor = SmartHomeColors.StatBoxBackground,
+                                uncheckedThumbColor = SmartHomeColors.TextSecondary
+                            )
+                        )
+                    }
                 }
 
-                Spacer(modifier = Modifier.width(14.dp))
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = deviceName,
-                        color = SmartHomeColors.TextSecondary,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.SemiBold
+                if (isEditing) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = editWattageText,
+                        onValueChange = { editWattageText = it },
+                        label = { Text("Wattage (W)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
                     )
-                    Text(
-                        text = location,
-                        color = SmartHomeColors.TextLight,
-                        fontSize = 13.sp
-                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row {
+                        TextButton(onClick = {
+                            val parsedWattage = editWattageText.toDoubleOrNull() ?: 0.0
+                            onSaveEdits(editName.ifBlank { deviceName }, parsedWattage)
+                            isEditing = false
+                        }) {
+                            Text("Save", color = SmartHomeColors.AccentTeal, fontWeight = FontWeight.Bold)
+                        }
+                        TextButton(onClick = { isEditing = false }) {
+                            Text("Cancel", color = SmartHomeColors.TextLight)
+                        }
+                    }
                 }
 
-                Switch(
-                    checked = isOn,
-                    onCheckedChange = onToggle,
-                    colors = SwitchDefaults.colors(
-                        checkedTrackColor = SmartHomeColors.AccentTeal,
-                        checkedThumbColor = SmartHomeColors.TextPrimary,
-                        uncheckedTrackColor = SmartHomeColors.StatBoxBackground,
-                        uncheckedThumbColor = SmartHomeColors.TextSecondary
-                    )
-                )
+                Spacer(modifier = Modifier.height(18.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    StatBox(label = "Today's usage", value = todayUsageKwh, modifier = Modifier.weight(1f))
+                    StatBox(label = "Current session", value = onForLabel, modifier = Modifier.weight(1f))
+                }
             }
 
-            Spacer(modifier = Modifier.height(18.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                StatBox(label = "Today's usage", value = todayUsageKwh, modifier = Modifier.weight(1f))
-                StatBox(label = "On for", value = onForLabel, modifier = Modifier.weight(1f))
+            if (!isEditing) {
+                IconButton(
+                    onClick = { isEditing = true },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                ) {
+                    Icon(Icons.Filled.Edit, contentDescription = "Edit", tint = SmartHomeColors.TextLight)
+                }
             }
         }
     }
@@ -410,7 +567,7 @@ fun ConnectedDeviceRow(
     entry: DeviceEntry,
     modifier: Modifier = Modifier
 ) {
-    val state = rememberDeviceState(entry.linkedPath)
+    val usage = rememberDeviceUsage(entry.linkedPath)
 
     Row(
         modifier = modifier
@@ -438,7 +595,7 @@ fun ConnectedDeviceRow(
             Text(text = "${entry.floorName ?: entry.floorId} · ${entry.roomName ?: entry.roomId}", color = SmartHomeColors.TextPrimary.copy(alpha = 0.6f), fontSize = 11.sp)
         }
         Switch(
-            checked = state == "on",
+            checked = usage.state == "on",
             onCheckedChange = { isChecked -> toggleDeviceState(entry.linkedPath, isChecked) },
             colors = SwitchDefaults.colors(
                 checkedTrackColor = SmartHomeColors.AccentTeal,
@@ -567,7 +724,29 @@ fun DeviceDetailScreen(
     val matchingVirtual = virtualDevices.find { it.linkedPath == fullDevicePath }
     val cardCategory = matchingVirtual?.category ?: (pathParts.getOrNull(4) ?: "Lights")
     val cardName = matchingVirtual?.customName ?: deviceId
-    val cardState = rememberDeviceState(fullDevicePath)
+    val cardState = rememberDeviceUsage(fullDevicePath)
+
+    val usage = rememberDeviceUsage(fullDevicePath)
+    val now = rememberTicker()
+
+    val liveOnSecondsToday = remember(usage, now) {
+        val today = currentDateString()
+        val base = if (usage.usageDate == today) usage.todayOnSeconds else 0L
+        val extra = if (usage.state == "on") ((now - usage.lastChangedAt) / 1000).coerceAtLeast(0) else 0L
+        base + extra
+    }
+    val onForSeconds = remember(usage, now) {
+        if (usage.state == "on") ((now - usage.lastChangedAt) / 1000).coerceAtLeast(0) else 0L
+    }
+    val wattage = matchingVirtual?.wattage ?: 0.0
+    val todayUsageKwh = (liveOnSecondsToday / 3600.0) * (wattage / 1000.0)
+    val usageLabel = when {
+        wattage <= 0 -> "—"
+        todayUsageKwh < 0.01 -> "%.1f Wh".format(todayUsageKwh * 1000)
+        else -> "%.2f kWh".format(todayUsageKwh)
+    }
+
+    val context = LocalContext.current
 
 // --- Dropdown option lists, now driven by the SAVED virtual floors/rooms ---
     val floorOptions = listOf(ALL_FLOORS) + AppData.virtualFloorList.map { it.customName }.distinct().sorted()
@@ -601,10 +780,23 @@ fun DeviceDetailScreen(
             deviceName = cardName,
             location = "${matchingVirtual?.floorName ?: initialFloorName} · ${matchingVirtual?.roomName ?: initialRoomName}",
             category = cardCategory,
-            isOn = cardState == "on",
+            isOn = usage.state == "on",
             onToggle = { isChecked -> toggleDeviceState(fullDevicePath, isChecked) },
-            todayUsageKwh = matchingVirtual?.let { "${it.wattage} W" } ?: "—",
-            onForLabel = "—"
+            todayUsageKwh = usageLabel,
+            onForLabel = if (usage.state == "on") formatDuration(onForSeconds) else "Off",
+            wattage = wattage,
+            onSaveEdits = { newName, newWattage ->
+                matchingVirtual?.let { mv ->
+                    val idx = AppData.virtualDeviceList.indexOfFirst { it.id == mv.virtualId }
+                    if (idx != -1) {
+                        AppData.virtualDeviceList[idx] = AppData.virtualDeviceList[idx].copy(
+                            customName = newName,
+                            wattage = newWattage
+                        )
+                        VirtualStorage.save(context)
+                    }
+                }
+            }
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -656,18 +848,3 @@ fun DeviceDetailScreen(
     }
 }
 
-@Preview(showBackground = true)
-@Composable
-private fun DeviceDetailCardPreview() {
-    MaterialTheme {
-        DeviceDetailCard(
-            deviceName = "Light bulb 01",
-            location = "F1 · Bedroom",
-            category = "Lights",
-            isOn = true,
-            onToggle = {},
-            todayUsageKwh = "0.4 kWh",
-            onForLabel = "2h 10m"
-        )
-    }
-}

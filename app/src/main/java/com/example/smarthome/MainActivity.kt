@@ -39,11 +39,10 @@ import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
 import android.content.Context
-import androidx.compose.runtime.mutableStateListOf
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import androidx.compose.runtime.snapshots.SnapshotStateList
-import androidx.compose.runtime.mutableStateListOf
+
 
 
 // A plain data holder representing ONE device (a light, a camera, etc).
@@ -118,6 +117,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun Main(){
     var selectedTab by remember{mutableIntStateOf(1)}
+    var selectedDevicePath by remember { mutableStateOf<String?>(null) }
+    var selectedDeviceId by remember { mutableStateOf<String?>(null) }
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -159,8 +160,8 @@ fun Main(){
         when (selectedTab) {
             1 -> {
                 DeviceDetailScreen(
-                    devicePath = "Floors/floor_01/Rooms/room_01/Lights", // use a real path from your DB
-                    deviceId = "light_01", // use a real device id from your DB
+                    devicePath = selectedDevicePath ?: "Floors/floor_01/Rooms/room_01/Lights", // use a real path from your DB
+                    deviceId = selectedDeviceId ?: "light_01",// use a real device id from your DB
                     modifier = Modifier.padding(innerPadding)
                 )
             }
@@ -170,7 +171,13 @@ fun Main(){
                 }
             }
             2 -> {
-                Navigate(modifier = Modifier.padding(innerPadding))
+                Navigate(modifier = Modifier.padding(innerPadding),
+                    onDeviceSelected = { devicePath, deviceId ->
+                        selectedDevicePath = devicePath
+                        selectedDeviceId = deviceId
+                        selectedTab = 1
+                    }
+                )
             }
             3 -> {
                 Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
@@ -261,7 +268,9 @@ fun SmartHomeScreen(modifier: Modifier = Modifier) {
                     roomsSnap.children.forEachIndexed { index, roomSnap ->
                         val roomId = roomSnap.key ?: return@forEachIndexed
                         val categories = listOf("Cameras", "Lights", "Acs", "Outlets")
-                            Room(id = index, name = "$floorNum-$roomId",floorId = floorNum ,path = "Floors/$floorId/Rooms/$roomId"  )
+                        newList2.add(
+                            Room(id = index, name = "$floorNum-$roomId", floorId = floorNum, path = "Floors/$floorId/Rooms/$roomId")
+                        )
                         val roomNum = index
                         for (category in categories) {
                             val typeLabel = category.dropLast(1)

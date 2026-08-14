@@ -154,7 +154,7 @@ enum class DeviceCategories {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun Navigate(modifier: Modifier = Modifier) {
+fun Navigate(modifier: Modifier = Modifier, onDeviceSelected: (devicePath: String, deviceId: String) -> Unit = { _, _ -> }) {
     var selectedFloor by remember { mutableIntStateOf(0) }
     var selectedRoom by remember { mutableIntStateOf(0) }
     var selectedDevice by remember { mutableIntStateOf(0) }
@@ -459,28 +459,46 @@ fun Navigate(modifier: Modifier = Modifier) {
                         deviceInfoDialog?.let { pd ->
                             AlertDialog(
                                 onDismissRequest = { deviceInfoDialog = null },
-//                                title = { Text(pd.label) },
-                                title = { Text(
-                                    text = pd.label,
-                                    color = Color(0xFF1E5E6E),
-                                    fontWeight = FontWeight.Bold
-                                ) },
-                                text = { Text("Placed at (${pd.placement.position.x.toInt()}, ${pd.placement.position.y.toInt()})",
-                                    color = Color(0xFF1E5E6E)
-                                ) },
+                                title = {
+                                    Text(
+                                        text = pd.label,
+                                        color = Color(0xFF1E5E6E),
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                },
+                                text = {
+                                    Column {
+                                        Text(
+                                            "Placed at (${pd.placement.position.x.toInt()}, ${pd.placement.position.y.toInt()})",
+                                            color = Color(0xFF1E5E6E)
+                                        )
+                                        Spacer(modifier = Modifier.height(12.dp))
+                                        TextButton(onClick = {
+                                            val linkedPath = AppData.virtualDeviceList
+                                                .firstOrNull { it.id == pd.placement.virtualDeviceId }
+                                                ?.linkedPath
 
-//            text = { Text("Are you sure you want to delete \"${room.customName}\"?") },
-//                                text = { Text(
-//                                    text = "Are you sure you want to delete \"${floor.customName}\"?",
-//                                    color = Color(0xFF1E5E6E)
-//                                ) },
+                                            if (linkedPath != null) {
+                                                val lastSlash = linkedPath.lastIndexOf('/')
+                                                if (lastSlash != -1) {
+                                                    val devicePath = linkedPath.substring(0, lastSlash)
+                                                    val deviceId = linkedPath.substring(lastSlash + 1)
+                                                    onDeviceSelected(devicePath, deviceId)
+                                                    deviceInfoDialog = null
+                                                }
+                                            }
+                                        }) {
+                                            Text("View Details", color = Color(0xFF1E5E6E), fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                },
                                 confirmButton = {
                                     TextButton(onClick = {
                                         deleteVirtualDeviceEverywhere(context, pd.placement.virtualDeviceId)
                                         deviceInfoDialog = null
                                     }) { Text("Remove", color = Color.Red) }
                                 },
-                                dismissButton = { TextButton(onClick = { deviceInfoDialog = null }) { Text("Close",color = Color.Black) } }
+                                dismissButton = { TextButton(onClick = { deviceInfoDialog = null }) { Text("Close", color = Color.Black) } }
                             )
                         }
                     }
