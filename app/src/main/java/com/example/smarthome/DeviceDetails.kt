@@ -126,7 +126,21 @@ data class DeviceUsage(
     val todayOnSeconds: Long
 )
 
+enum class DeviceStatus {
+    ON, OFF, ERROR, DISCONNECTED;
 
+    companion object {
+        fun fromString(raw: String?): DeviceStatus = when (raw?.uppercase()) {
+            "ON" -> ON
+            "OFF" -> OFF
+            "ERROR" -> ERROR
+            "DISCONNECTED" -> DISCONNECTED
+            else -> OFF
+        }
+    }
+
+    val isControllable: Boolean get() = this == ON || this == OFF
+}
 /**
  * Builds the device list purely from AppData.virtualDeviceList -- no Firebase
  * read here at all. AppData.virtualDeviceList is a mutableStateListOf, so Compose
@@ -243,29 +257,25 @@ fun toggleDeviceState(linkedPath: String, isChecked: Boolean) {
 
     ref.runTransaction(object : com.google.firebase.database.Transaction.Handler {
         override fun doTransaction(data: com.google.firebase.database.MutableData): com.google.firebase.database.Transaction.Result {
-            val prevState = data.child("state").getValue(String::class.java) ?: "off"
+            val prevStatus = DeviceStatus.fromString(data.child("state").getValue(String::class.java))
             val prevChangedAt = data.child("lastChangedAt").getValue(Long::class.java) ?: now
             val prevUsageDate = data.child("usageDate").getValue(String::class.java) ?: today
             val prevTodaySeconds = data.child("todayOnSeconds").getValue(Long::class.java) ?: 0L
 
             var newTodaySeconds = if (prevUsageDate == today) prevTodaySeconds else 0L
-            if (prevState == "on") {
+            if (prevStatus == DeviceStatus.ON) {
                 val elapsed = ((now - prevChangedAt) / 1000).coerceAtLeast(0)
                 newTodaySeconds += elapsed
             }
 
-            data.child("state").value = if (isChecked) "on" else "off"
+            data.child("state").value = if (isChecked) "ON" else "OFF"
             data.child("lastChangedAt").value = now
             data.child("usageDate").value = today
             data.child("todayOnSeconds").value = newTodaySeconds
             return com.google.firebase.database.Transaction.success(data)
         }
 
-        override fun onComplete(
-            error: DatabaseError?,
-            committed: Boolean,
-            snapshot: DataSnapshot?
-        ) {
+        override fun onComplete(error: DatabaseError?, committed: Boolean, snapshot: DataSnapshot?) {
             if (error != null) Log.e("DEVICE_DETAIL", "Toggle failed for $linkedPath", error.toException())
         }
     })
@@ -390,7 +400,7 @@ fun DeviceDetailCard(
     deviceName: String,
     location: String,
     category: String,
-    isOn: Boolean,
+    deviceStatus: DeviceStatus,
     onToggle: (Boolean) -> Unit,
     todayUsageKwh: String,
     onForLabel: String,
@@ -460,13 +470,25 @@ fun DeviceDetailCard(
                                 color = SmartHomeColors.TextLight,
                                 fontSize = 13.sp
                             )
+                            Text(
+                                text = deviceStatus.name,
+                                color = when (deviceStatus) {
+                                    DeviceStatus.ON -> Color(0xFF4CAF50)
+                                    DeviceStatus.OFF -> SmartHomeColors.TextLight
+                                    DeviceStatus.ERROR -> Color(0xFFEF5350)
+                                    DeviceStatus.DISCONNECTED -> Color(0xFF9E9E9E)
+                                },
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
 
                     if (!isEditing) {
                         Switch(
-                            checked = isOn,
+                            checked = deviceStatus == DeviceStatus.ON,
                             onCheckedChange = onToggle,
+                            enabled = deviceStatus.isControllable,
                             colors = SwitchDefaults.colors(
                                 checkedTrackColor = SmartHomeColors.AccentTeal,
                                 checkedThumbColor = SmartHomeColors.TextPrimary,
@@ -505,10 +527,15 @@ fun DeviceDetailCard(
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     StatBox(label = "Today's usage", value = todayUsageKwh, modifier = Modifier.weight(1f))
                     StatBox(label = "Current session", value = onForLabel, modifier = Modifier.weight(1f))
+                    StatBox(
+                        label = "Wattage",
+                        value = if (wattage > 0) "${wattage.toInt()}W" else "—",
+                        modifier = Modifier.weight(1f)
+                    )
                 }
             }
 
@@ -594,9 +621,12 @@ fun ConnectedDeviceRow(
             Text(text = entry.customName, color = SmartHomeColors.TextPrimary, fontSize = 14.sp)
             Text(text = "${entry.floorName ?: entry.floorId} · ${entry.roomName ?: entry.roomId}", color = SmartHomeColors.TextPrimary.copy(alpha = 0.6f), fontSize = 11.sp)
         }
+        val rowStatus = DeviceStatus.fromString(usage.state)
         Switch(
-            checked = usage.state == "on",
-            onCheckedChange = { isChecked -> toggleDeviceState(entry.linkedPath, isChecked) },
+            checked = rowStatus == DeviceStatus.ON,
+            enabled = rowStatus.isControllable,
+            onCheckedChange = { isChecked ->
+                if (rowStatus.isControllable) toggleDeviceState(entry.linkedPath, isChecked) },
             colors = SwitchDefaults.colors(
                 checkedTrackColor = SmartHomeColors.AccentTeal,
                 checkedThumbColor = SmartHomeColors.TextPrimary,
@@ -717,27 +747,29 @@ fun DeviceDetailScreen(
     val initialFloorName = virtualFloorNameForPath(fullDevicePath) ?: ALL_FLOORS
     val initialRoomName = virtualRoomNameForPath(fullDevicePath) ?: ALL_ROOMS
 
-    var selectedFloor by remember { mutableStateOf(initialFloorName) }
-    var selectedRoom by remember { mutableStateOf(initialRoomName) }
-    var selectedCategory by remember { mutableStateOf(ALL_CATEGORIES) }
+    var selectedFloor by remember(fullDevicePath) { mutableStateOf(initialFloorName) }
+    var selectedRoom by remember(fullDevicePath) { mutableStateOf(initialRoomName) }
+    var selectedCategory by remember(fullDevicePath) { mutableStateOf(ALL_CATEGORIES) }
 
     val matchingVirtual = virtualDevices.find { it.linkedPath == fullDevicePath }
     val cardCategory = matchingVirtual?.category ?: (pathParts.getOrNull(4) ?: "Lights")
     val cardName = matchingVirtual?.customName ?: deviceId
-    val cardState = rememberDeviceUsage(fullDevicePath)
 
     val usage = rememberDeviceUsage(fullDevicePath)
     val now = rememberTicker()
 
+    val currentStatus = DeviceStatus.fromString(usage.state)
+
     val liveOnSecondsToday = remember(usage, now) {
         val today = currentDateString()
         val base = if (usage.usageDate == today) usage.todayOnSeconds else 0L
-        val extra = if (usage.state == "on") ((now - usage.lastChangedAt) / 1000).coerceAtLeast(0) else 0L
+        val extra = if (currentStatus == DeviceStatus.ON) ((now - usage.lastChangedAt) / 1000).coerceAtLeast(0) else 0L
         base + extra
     }
     val onForSeconds = remember(usage, now) {
-        if (usage.state == "on") ((now - usage.lastChangedAt) / 1000).coerceAtLeast(0) else 0L
+        if (currentStatus == DeviceStatus.ON) ((now - usage.lastChangedAt) / 1000).coerceAtLeast(0) else 0L
     }
+
     val wattage = matchingVirtual?.wattage ?: 0.0
     val todayUsageKwh = (liveOnSecondsToday / 3600.0) * (wattage / 1000.0)
     val usageLabel = when {
@@ -780,10 +812,14 @@ fun DeviceDetailScreen(
             deviceName = cardName,
             location = "${matchingVirtual?.floorName ?: initialFloorName} · ${matchingVirtual?.roomName ?: initialRoomName}",
             category = cardCategory,
-            isOn = usage.state == "on",
-            onToggle = { isChecked -> toggleDeviceState(fullDevicePath, isChecked) },
+            deviceStatus = currentStatus,
+            onToggle = { isChecked ->
+                if (currentStatus.isControllable) {
+                    toggleDeviceState(fullDevicePath, isChecked)
+                }
+            },
             todayUsageKwh = usageLabel,
-            onForLabel = if (usage.state == "on") formatDuration(onForSeconds) else "Off",
+            onForLabel = if (currentStatus == DeviceStatus.ON) formatDuration(onForSeconds) else "Off",
             wattage = wattage,
             onSaveEdits = { newName, newWattage ->
                 matchingVirtual?.let { mv ->
