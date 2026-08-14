@@ -1,7 +1,6 @@
 package com.example.smarthome
 
 import android.util.Log
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,6 +26,9 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ElectricalServices
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -36,12 +38,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -50,19 +58,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
-import androidx.compose.runtime.LaunchedEffect
 import kotlinx.coroutines.delay
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.material3.TextButton
+
+
+
+
 
 // -----------------------------------------------------------------
 // Palette pulled from the "Connected Devices" screen mockup
@@ -116,7 +121,8 @@ data class DeviceEntry(
     val roomId: String,
     val linkedPath: String,  // real Firebase path: "Floors/{floorId}/Rooms/{roomId}/{category}/{deviceId}"
     val floorName: String?,  // custom name from AppData.virtualFloorList, null if not saved
-    val roomName: String?    // custom name from AppData.virtualRoomList, null if not saved
+    val roomName: String?,
+    val maxOnDurationSeconds: Long?// custom name from AppData.virtualRoomList, null if not saved
 )
 
 data class DeviceUsage(
@@ -167,7 +173,8 @@ fun rememberVirtualDeviceEntries(): List<DeviceEntry> {
             roomId = parts[3],
             linkedPath = path,
             floorName = virtualFloorNameForPath(path),
-            roomName = virtualRoomNameForPath(path)
+            roomName = virtualRoomNameForPath(path),
+            maxOnDurationSeconds = vd.maxOnDurationSeconds
         )
     }
 }
@@ -412,13 +419,17 @@ fun DeviceDetailCard(
     todayUsageKwh: String,
     onForLabel: String,
     wattage: Double,
-    onSaveEdits: (newName: String, newWattage: Double) -> Unit,
+    maxOnDurationSeconds: Long?,
+    onSaveEdits: (newName: String, newWattage: Double, newMaxDurationSeconds: Long?) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var isEditing by remember { mutableStateOf(false) }
     var editName by remember(deviceName, isEditing) { mutableStateOf(deviceName) }
     var editWattageText by remember(wattage, isEditing) {
         mutableStateOf(if (wattage > 0) wattage.toString() else "")
+    }
+    var editMaxDurationText by remember(maxOnDurationSeconds, isEditing) {   // NEW
+        mutableStateOf(maxOnDurationSeconds?.let { (it / 60).toString() } ?: "")
     }
 
     Card(
@@ -473,7 +484,12 @@ fun DeviceDetailCard(
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = if (wattage > 0) "$location · ${wattage.toInt()}W" else location,
+                                text = buildString {
+                                    append(if (wattage > 0) "$location · ${wattage.toInt()}W" else location)
+                                    maxOnDurationSeconds?.takeIf { it > 0 }?.let {
+                                        append(" · cutoff ${it / 60}min")
+                                    }
+                                },
                                 color = SmartHomeColors.TextLight,
                                 fontSize = 13.sp
                             )
@@ -516,10 +532,19 @@ fun DeviceDetailCard(
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(                                        // NEW
+                        value = editMaxDurationText,
+                        onValueChange = { editMaxDurationText = it },
+                        label = { Text("Max ON minutes (fire-hazard cutoff, optional)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
                     Row {
                         TextButton(onClick = {
                             val parsedWattage = editWattageText.toDoubleOrNull() ?: 0.0
-                            onSaveEdits(editName.ifBlank { deviceName }, parsedWattage)
+                            val parsedMaxDuration = editMaxDurationText.toLongOrNull()?.times(60)  // NEW, null if blank/invalid
+                            onSaveEdits(editName.ifBlank { deviceName }, parsedWattage, parsedMaxDuration)  // CHANGED
                             isEditing = false
                         }) {
                             Text("Save", color = SmartHomeColors.AccentTeal, fontWeight = FontWeight.Bold)
@@ -779,6 +804,30 @@ fun DeviceDetailScreen(
         if (currentStatus == DeviceStatus.ON) ((now - usage.lastChangedAt) / 1000).coerceAtLeast(0) else 0L
     }
 
+    var showSafetyAlert by remember(fullDevicePath) { mutableStateOf(false) }
+    var cutoffTripped by remember(fullDevicePath, usage.lastChangedAt) { mutableStateOf(false) }
+
+    LaunchedEffect(currentStatus, onForSeconds) {
+        val maxDuration = matchingVirtual?.maxOnDurationSeconds
+        if (currentStatus == DeviceStatus.ON && maxDuration != null && maxDuration > 0
+            && onForSeconds >= maxDuration && !cutoffTripped) {
+            cutoffTripped = true
+            toggleDeviceState(fullDevicePath, false)
+            showSafetyAlert = true
+        }
+    }
+
+    if (showSafetyAlert) {
+        AlertDialog(
+            onDismissRequest = { showSafetyAlert = false },
+            title = { Text("Safety cutoff triggered") },
+            text = { Text("$cardName was automatically turned off after exceeding its maximum safe ON duration.") },
+            confirmButton = {
+                TextButton(onClick = { showSafetyAlert = false }) { Text("OK") }
+            }
+        )
+    }
+
     val wattage = matchingVirtual?.wattage ?: 0.0
     val todayUsageKwh = (liveOnSecondsToday / 3600.0) * (wattage / 1000.0)
     val usageLabel = when {
@@ -837,13 +886,15 @@ fun DeviceDetailScreen(
             todayUsageKwh = usageLabel,
             onForLabel = if (currentStatus == DeviceStatus.ON) formatDuration(onForSeconds) else "Off",
             wattage = wattage,
-            onSaveEdits = { newName, newWattage ->
+            maxOnDurationSeconds = matchingVirtual?.maxOnDurationSeconds,   // NEW
+            onSaveEdits = { newName, newWattage, newMaxDurationSeconds: Long? ->    // CHANGED
                 matchingVirtual?.let { mv ->
                     val idx = AppData.virtualDeviceList.indexOfFirst { it.id == mv.virtualId }
                     if (idx != -1) {
                         AppData.virtualDeviceList[idx] = AppData.virtualDeviceList[idx].copy(
                             customName = newName,
-                            wattage = newWattage
+                            wattage = newWattage,
+                            maxOnDurationSeconds = newMaxDurationSeconds   // NEW
                         )
                         VirtualStorage.save(context)
                     }

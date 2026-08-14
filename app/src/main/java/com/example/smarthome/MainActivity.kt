@@ -74,7 +74,8 @@ data class VirtualDevice(
     val customName: String,  // name the user picks
     val linkedPath: String?,  // path of the real Device it's mapped to, null = not mapped yet
     val wattage: Double,
-    val position: Point
+    val position: Point,
+    val maxOnDurationSeconds: Long? = null
 )
 
 data class VirtualRoom(

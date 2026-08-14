@@ -776,6 +776,7 @@ fun AddVirtualObjectScreen(
     var selectedRoom by remember { mutableStateOf<Room?>(null) }
     var selectedFloor by remember { mutableStateOf<Floor?>(null) }
     var category by remember { mutableStateOf<DeviceCategories?>(null) }
+    var maxDurationText by remember { mutableStateOf("") }
 
     Column(modifier = Modifier.padding(16.dp)) {
         Text(
@@ -815,7 +816,9 @@ fun AddVirtualObjectScreen(
                     wattage = wattage,
                     onWattageSelected = { wattage = it.toDoubleOrNull() ?: 0.0 },
                     category = category,
-                    onDeviceCategorySelected = {category = it}
+                    onDeviceCategorySelected = {category = it},
+                    maxDurationMinutes = maxDurationText,
+                    onMaxDurationSelected = { maxDurationText = it }
 
                 )
             }
@@ -880,7 +883,8 @@ fun AddVirtualObjectScreen(
                                 customName = customName,
                                 linkedPath = selectedDevice!!.path,
                                 wattage = wattage,
-                                position = placementPosition
+                                position = placementPosition,
+                                maxOnDurationSeconds = maxDurationText.toLongOrNull()?.times(60)
                             )
                             AppData.virtualDeviceList.add(newVirtualDevice)
 
@@ -913,7 +917,9 @@ fun DevicePicker(
     wattage: Double?,
     onWattageSelected: (String) -> Unit,
     category: DeviceCategories?,
-    onDeviceCategorySelected: (DeviceCategories) -> Unit
+    onDeviceCategorySelected: (DeviceCategories) -> Unit,
+    maxDurationMinutes: String,              // NEW
+    onMaxDurationSelected: (String) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
     var categoryExpanded by remember { mutableStateOf(false) }
@@ -928,6 +934,20 @@ fun DevicePicker(
 
             OutlinedButton(onClick = { expanded = true }) {
                 Text(selectedDevice?.name?.toString() ?: "Select a device")
+            }
+            OutlinedButton(onClick = { categoryExpanded = true }) {
+                Text(category?.name ?: "Select a category")
+            }
+            DropdownMenu(expanded = categoryExpanded, onDismissRequest = { categoryExpanded = false }) {
+                DeviceCategories.entries.forEach { categoryType ->
+                    DropdownMenuItem(
+                        text = { Text(categoryType.name) },
+                        onClick = {
+                            onDeviceCategorySelected(categoryType)
+                            categoryExpanded = false
+                        }
+                    )
+                }
             }
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 if (availableDevices.isEmpty()) {
@@ -960,21 +980,12 @@ fun DevicePicker(
                     label = { Text("Wattage e.g. 6.7") }
                 )
             }
-
-            OutlinedButton(onClick = { categoryExpanded = true }) {
-                Text(category?.name ?: "Select a category")
-            }
-            DropdownMenu(expanded = categoryExpanded, onDismissRequest = { categoryExpanded = false }) {
-                DeviceCategories.entries.forEach { categoryType ->
-                    DropdownMenuItem(
-                        text = { Text(categoryType.name) },
-                        onClick = {
-                            onDeviceCategorySelected(categoryType)
-                            categoryExpanded = false
-                        }
-                    )
-                }
-            }
+            Text("Fire-hazard cutoff (optional)")
+            OutlinedTextField(
+                value = maxDurationMinutes,
+                onValueChange = onMaxDurationSelected,
+                label = { Text("Max ON minutes e.g. 30") }
+            )
         }
     }
 }
