@@ -48,15 +48,11 @@ dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.02.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
-<<<<<<< Updated upstream
-
-    implementation("androidx.compose.ui:ui-tooling-preview")
-}
-=======
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui-tooling-preview")
+    debugImplementation("androidx.compose.ui:ui-tooling")
 
-    // Media3 ExoPlayer – compatible with compileSdk 34
+    // Camera video playback—compatible with compileSdk 34
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
 
@@ -66,10 +62,5 @@ dependencies {
     implementation("com.google.firebase:firebase-messaging-ktx")
     implementation("com.google.firebase:firebase-functions-ktx")
 
-    // JSON
     implementation("com.google.code.gson:gson:2.10.1")
-
-    // Android Studio preview support
-    debugImplementation("androidx.compose.ui:ui-tooling")
 }
->>>>>>> Stashed changes
