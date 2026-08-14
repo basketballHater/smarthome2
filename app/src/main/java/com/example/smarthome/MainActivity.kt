@@ -26,6 +26,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.Button
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -41,6 +42,7 @@ import com.google.firebase.database.ValueEventListener
 import android.content.Context
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.snapshots.SnapshotStateList
 
 
@@ -119,6 +121,10 @@ fun Main(){
     var selectedTab by remember{mutableIntStateOf(1)}
     var selectedDevicePath by remember { mutableStateOf<String?>(null) }
     var selectedDeviceId by remember { mutableStateOf<String?>(null) }
+
+
+    val context = LocalContext.current
+
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -180,8 +186,13 @@ fun Main(){
                 )
             }
             3 -> {
-                Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-                    Text("Configurations page coming soon", modifier = Modifier.padding(16.dp))
+                Column(modifier = Modifier.fillMaxSize().padding(innerPadding)
+                ) {
+                    Button(
+                        onClick = { clearAllVirtualMappings(context) }
+                    ) {
+                        Text("Reset all virtual assignments")
+                    }
                 }
             }
         }
@@ -234,6 +245,15 @@ object VirtualStorage {
         }
     }
 }
+
+
+fun clearAllVirtualMappings(context: Context) {
+    AppData.virtualDeviceList.clear()
+    AppData.virtualRoomList.clear()
+    AppData.virtualFloorList.clear()
+    VirtualStorage.save(context) // persists the now-empty lists to SharedPreferences
+}
+
 
 @Composable
 fun SmartHomeScreen(modifier: Modifier = Modifier) {

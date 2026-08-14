@@ -207,6 +207,7 @@ fun rememberDeviceUsage(linkedPath: String): DeviceUsage {
 
     DisposableEffect(linkedPath) {
         val ref = FirebaseDatabase.getInstance().getReference(linkedPath)
+        ref.keepSynced(true)
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 usage = DeviceUsage(
@@ -230,7 +231,7 @@ fun rememberDeviceUsage(linkedPath: String): DeviceUsage {
 
 // Recomposes callers once a minute so live durations keep advancing on screen
 @Composable
-fun rememberTicker(intervalMillis: Long = 60_000L): Long {
+fun rememberTicker(intervalMillis: Long = 10_000L): Long {
     var tick by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -244,7 +245,13 @@ fun rememberTicker(intervalMillis: Long = 60_000L): Long {
 fun formatDuration(seconds: Long): String {
     val h = seconds / 3600
     val m = (seconds % 3600) / 60
-    return if (h > 0) "${h}h ${m}m" else "${m}m"
+    val s = seconds % 60
+
+    return when {
+        h > 0 -> "${h}h ${m}m"
+        m > 0 -> "${m}m ${s}s"
+        else -> "${s}s"
+    }
 }
 
 fun currentDateString(): String =
@@ -527,15 +534,10 @@ fun DeviceDetailCard(
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     StatBox(label = "Today's usage", value = todayUsageKwh, modifier = Modifier.weight(1f))
                     StatBox(label = "Current session", value = onForLabel, modifier = Modifier.weight(1f))
-                    StatBox(
-                        label = "Wattage",
-                        value = if (wattage > 0) "${wattage.toInt()}W" else "—",
-                        modifier = Modifier.weight(1f)
-                    )
                 }
             }
 
@@ -739,7 +741,6 @@ fun DeviceDetailScreen(
     // Floors tree directly -- this reflects whatever devices have been
     // added/named/mapped via the virtual device screen.
     val virtualDevices = rememberVirtualDeviceEntries()
-        .filter { it.floorName != null && it.roomName != null }
 
     val pathParts = devicePath.split("/")
     val fullDevicePath = "$devicePath/$deviceId"
@@ -763,7 +764,15 @@ fun DeviceDetailScreen(
     val liveOnSecondsToday = remember(usage, now) {
         val today = currentDateString()
         val base = if (usage.usageDate == today) usage.todayOnSeconds else 0L
-        val extra = if (currentStatus == DeviceStatus.ON) ((now - usage.lastChangedAt) / 1000).coerceAtLeast(0) else 0L
+        val extra = if (currentStatus == DeviceStatus.ON) {
+            // Clip elapsed time to the start of today, in case the device has been
+            // on since before midnight -- don't leak yesterday's seconds into today's total.
+            val startOfToday = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                .apply { isLenient = false }
+                .parse(today)?.time ?: usage.lastChangedAt
+            val sinceMillis = maxOf(usage.lastChangedAt, startOfToday)
+            ((now - sinceMillis) / 1000).coerceAtLeast(0)
+        } else 0L
         base + extra
     }
     val onForSeconds = remember(usage, now) {
@@ -792,9 +801,16 @@ fun DeviceDetailScreen(
 
 // --- The filtered "connected devices" list, matched by saved custom names ---
     val requestedCategoryKey = categoryLabelToFirebaseKey[selectedCategory]
+
+    val selectedFloorPath = if (selectedFloor == ALL_FLOORS) null
+    else AppData.virtualFloorList.find { it.customName == selectedFloor }?.linkedPath
+
+    val selectedRoomPath = if (selectedRoom == ALL_ROOMS) null
+    else AppData.virtualRoomList.find { it.customName == selectedRoom }?.linkedPath
+
     val connectedDevices = virtualDevices.filter { entry ->
-        val matchesFloor = selectedFloor == ALL_FLOORS || entry.floorName == selectedFloor
-        val matchesRoom = selectedRoom == ALL_ROOMS || entry.roomName == selectedRoom
+        val matchesFloor = selectedFloorPath == null || entry.linkedPath.startsWith("$selectedFloorPath/")
+        val matchesRoom = selectedRoomPath == null || entry.linkedPath.startsWith("$selectedRoomPath/")
         val matchesCategory = requestedCategoryKey == null || entry.category == requestedCategoryKey
         val isTheCardDevice = entry.linkedPath == fullDevicePath
         matchesFloor && matchesRoom && matchesCategory && !isTheCardDevice
