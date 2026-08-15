@@ -116,7 +116,11 @@ import kotlin.math.cos
 import kotlin.math.sin
 import androidx.compose.ui.draw.clipToBounds
 
-data class PlacedDeviceView(val placement: DevicePlacement, val label: String)
+// PlacedDeviceView now also carries outletCount (looked up from the linked
+// VirtualDevice) purely so the floor-plan renderer can draw a "x N" badge on
+// multiswitches without re-querying AppData.virtualDeviceList inside the
+// Canvas draw pass.
+data class PlacedDeviceView(val placement: DevicePlacement, val label: String, val outletCount: Int = 1)
 
 private const val DEVICE_HIT_RADIUS = 20f
 
@@ -143,12 +147,17 @@ data class DevicePlacement(
     val category: DeviceCategories
 )
 
+// MULTISWITCH is a distinct icon/placement category from OUTLET so a power-strip-style
+// device reads differently on the floor plan than a single outlet. The underlying
+// Firebase category key (from linkedPath) is still "Outlets" either way -- this enum
+// only affects how the dot is drawn and how AddVirtualObjectScreen behaves.
 enum class DeviceCategories {
     OUTLET,
     AC,
     LIGHT,
     FAN,
-    CAMERA
+    CAMERA,
+    MULTISWITCH
 }
 
 
@@ -190,67 +199,67 @@ fun Navigate(modifier: Modifier = Modifier, onDeviceSelected: (devicePath: Strin
             )
 
 
-                LazyRow(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(color = Color(0xFF85ABB5), shape = RoundedCornerShape(16.dp))
-                        .padding(5.dp)
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(color = Color(0xFF85ABB5), shape = RoundedCornerShape(16.dp))
+                    .padding(5.dp)
 
-                ) {
-                    if (AppData.virtualFloorList.isNotEmpty()) {
-                        items(AppData.virtualFloorList.size) { index ->
+            ) {
+                if (AppData.virtualFloorList.isNotEmpty()) {
+                    items(AppData.virtualFloorList.size) { index ->
 
-                            val floor = AppData.virtualFloorList[index]
+                        val floor = AppData.virtualFloorList[index]
 
-                            Column(
-                                modifier = Modifier
-                                    .padding(2.dp)
-                                    .width(80.dp)
-                                    .combinedClickable(
-                                        onClick = {
-                                            selectedFloor = index
-                                            selectedRoom = 0
-                                        },
-                                        onLongClick = { floorPendingDelete = floor }
-                                    )
-                                    .height(60.dp)
-                                    .background(
-                                        color = if (selectedFloor == index)
-                                            Color(0xFF1E5E6E)
-                                        else
-                                            Color.Transparent,
-                                        shape = RoundedCornerShape(16.dp)
-                                    ),
-                                verticalArrangement = Arrangement.Center,
-
-                                ) {
-                                Text(
-                                    text = floor.customName,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.fillMaxWidth(),
+                        Column(
+                            modifier = Modifier
+                                .padding(2.dp)
+                                .width(80.dp)
+                                .combinedClickable(
+                                    onClick = {
+                                        selectedFloor = index
+                                        selectedRoom = 0
+                                    },
+                                    onLongClick = { floorPendingDelete = floor }
                                 )
-                            }
-                        }
-                    }
+                                .height(60.dp)
+                                .background(
+                                    color = if (selectedFloor == index)
+                                        Color(0xFF1E5E6E)
+                                    else
+                                        Color.Transparent,
+                                    shape = RoundedCornerShape(16.dp)
+                                ),
+                            verticalArrangement = Arrangement.Center,
 
-                    item() {
-                        Button(
-                            modifier = Modifier.padding(5.dp),
-                            onClick = {
-                                // Floor mapping doesn't need a placement point.
-                                pendingDevicePosition = null
-                                deviceDialogRoomId = null
-                                objectType = 0
-                                showAddDialog = true
-                            }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Add,
-                                contentDescription = "Add"
+                            ) {
+                            Text(
+                                text = floor.customName,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth(),
                             )
                         }
+                    }
+                }
+
+                item() {
+                    Button(
+                        modifier = Modifier.padding(5.dp),
+                        onClick = {
+                            // Floor mapping doesn't need a placement point.
+                            pendingDevicePosition = null
+                            deviceDialogRoomId = null
+                            objectType = 0
+                            showAddDialog = true
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Add"
+                        )
+                    }
 
                 }
             }
@@ -363,9 +372,9 @@ fun Navigate(modifier: Modifier = Modifier, onDeviceSelected: (devicePath: Strin
                         var deviceInfoDialog by remember { mutableStateOf<PlacedDeviceView?>(null) }
 
                         val devicePlacements = currentRoom.devices.map { placement ->
-                            val label = AppData.virtualDeviceList.firstOrNull { it.id == placement.virtualDeviceId }?.customName
-                                ?: "Unknown device"
-                            PlacedDeviceView(placement, label)
+                            val vd = AppData.virtualDeviceList.firstOrNull { it.id == placement.virtualDeviceId }
+                            val label = vd?.customName ?: "Unknown device"
+                            PlacedDeviceView(placement, label, vd?.outletCount ?: 1)
                         }
 
                         if (placingDevice) {
@@ -475,6 +484,13 @@ fun Navigate(modifier: Modifier = Modifier, onDeviceSelected: (devicePath: Strin
                                             "Placed at (${pd.placement.position.x.toInt()}, ${pd.placement.position.y.toInt()})",
                                             color = Color(0xFF1E5E6E)
                                         )
+                                        if (pd.outletCount > 1) {
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                "${pd.outletCount} outlets on this multiswitch -- see Device Details to control them individually.",
+                                                color = Color(0xFF1E5E6E)
+                                            )
+                                        }
                                         Spacer(modifier = Modifier.height(12.dp))
                                         TextButton(onClick = {
                                             val linkedPath = AppData.virtualDeviceList
@@ -808,6 +824,10 @@ fun AddVirtualObjectScreen(
     var selectedFloor by remember { mutableStateOf<Floor?>(null) }
     var category by remember { mutableStateOf<DeviceCategories?>(null) }
     var maxDurationText by remember { mutableStateOf("") }
+    // NEW: only used when category == MULTISWITCH. Lives up here (not inside DevicePicker)
+    // so the Save button + the actual VirtualDevice construction below can both read it.
+    var outletCountText by remember { mutableStateOf("") }
+    var selectedOutletDevices by remember { mutableStateOf<List<Device?>>(emptyList()) }
 
     Column(modifier = Modifier.padding(16.dp)) {
         Text(
@@ -815,7 +835,6 @@ fun AddVirtualObjectScreen(
             fontWeight = FontWeight.Bold
         )
         Spacer(modifier = Modifier.height(8.dp))
-
 
         OutlinedTextField(
             value = customName,
@@ -847,14 +866,16 @@ fun AddVirtualObjectScreen(
                     wattage = wattage,
                     onWattageSelected = { wattage = it.toDoubleOrNull() ?: 0.0 },
                     category = category,
-                    onDeviceCategorySelected = {category = it},
+                    onDeviceCategorySelected = { category = it },
                     maxDurationMinutes = maxDurationText,
-                    onMaxDurationSelected = { maxDurationText = it }
-
+                    onMaxDurationSelected = { maxDurationText = it },
+                    outletCountText = outletCountText,
+                    onOutletCountSelected = { outletCountText = it },
+                    selectedOutletDevices = selectedOutletDevices,
+                    onOutletDevicesChanged = { selectedOutletDevices = it }
                 )
             }
         }
-
 
         Spacer(modifier = Modifier.height(16.dp))
         when(objectType) {
@@ -878,7 +899,6 @@ fun AddVirtualObjectScreen(
                     Text("Save Mapping")
                 }
             }
-            // NEW
             1 -> {
                 Button(
                     onClick = {
@@ -905,38 +925,70 @@ fun AddVirtualObjectScreen(
                 }
             }
             2 -> {
+                // CHANGED: multiswitch validity no longer depends on `selectedDevice` (which is
+                // never set for that category, since DevicePicker hides the single-device picker
+                // when category == MULTISWITCH). Instead it depends on having picked a device for
+                // every declared outlet.
+                val isMultiswitch = category == DeviceCategories.MULTISWITCH
+                val outletCount = outletCountText.toIntOrNull() ?: 0
+                val multiswitchReady = isMultiswitch &&
+                        outletCount > 0 &&
+                        selectedOutletDevices.size == outletCount &&
+                        selectedOutletDevices.all { it != null }
+                val saveEnabled = customName.isNotBlank() &&
+                        if (isMultiswitch) multiswitchReady else selectedDevice != null
+
                 Button(
                     onClick = {
-                        if (customName.isNotBlank() && selectedDevice != null) {
-                            val newId = "vdev${AppData.virtualDeviceList.size + 1}"
-                            val newVirtualDevice = VirtualDevice(
-                                id = newId,
-                                customName = customName,
-                                linkedPath = selectedDevice!!.path,
-                                wattage = wattage,
-                                position = placementPosition,
-                                maxOnDurationSeconds = maxDurationText.toLongOrNull()?.times(60)
-                            )
-                            AppData.virtualDeviceList.add(newVirtualDevice)
+                        if (!saveEnabled) return@Button
 
-                            // NEW: actually attach this placement to the room it was placed in
-                            if (placementRoomId != null && category != null) {
-                                val cat = category!!
-                                updateRoom(floor, placementRoomId) { r ->
-                                    r.copy(devices = r.devices + DevicePlacement(newId, placementPosition, cat))
-                                }
-                            }
+                        val newId = "vdev${AppData.virtualDeviceList.size + 1}"
 
-                            VirtualStorage.save(context)
-                            onDone()
+                        // CHANGED: for a multiswitch there's no single `selectedDevice` --
+                        // pick a linkedPath from the first outlet's device just so the
+                        // VirtualDevice has something identifying (per-outlet routing goes
+                        // through outletPaths below, not this field).
+                        val linkedPath = if (isMultiswitch) {
+                            selectedOutletDevices.first()!!.path
+                        } else {
+                            selectedDevice!!.path
                         }
+
+                        val outletCountValue = if (isMultiswitch) outletCount else 1
+
+                        // CHANGED: store each outlet's real Firebase path (not a typed name),
+                        // since outlets now come from picking actual devices, not free text.
+                        val outletPaths = if (isMultiswitch) {
+                            selectedOutletDevices.mapNotNull { it?.path }
+                        } else null
+
+                        val newVirtualDevice = VirtualDevice(
+                            id = newId,
+                            customName = customName,
+                            linkedPath = linkedPath,
+                            wattage = wattage,
+                            position = placementPosition,
+                            maxOnDurationSeconds = maxDurationText.toLongOrNull()?.times(60),
+                            outletCount = outletCountValue,
+                            outletLabels = outletPaths
+                        )
+                        AppData.virtualDeviceList.add(newVirtualDevice)
+
+                        if (placementRoomId != null && category != null) {
+                            val cat = category!!
+                            updateRoom(floor, placementRoomId) { r ->
+                                r.copy(devices = r.devices + DevicePlacement(newId, placementPosition, cat))
+                            }
+                        }
+
+                        VirtualStorage.save(context)
+                        onDone()
                     },
-                    enabled = customName.isNotBlank() && selectedDevice != null
+                    enabled = saveEnabled
                 ) {
                     Text("Save Mapping")
                 }
             }
-
         }
     }
 }
@@ -949,8 +1001,12 @@ fun DevicePicker(
     onWattageSelected: (String) -> Unit,
     category: DeviceCategories?,
     onDeviceCategorySelected: (DeviceCategories) -> Unit,
-    maxDurationMinutes: String,              // NEW
-    onMaxDurationSelected: (String) -> Unit
+    maxDurationMinutes: String,
+    onMaxDurationSelected: (String) -> Unit,
+    outletCountText: String = "",
+    onOutletCountSelected: (String) -> Unit = {},
+    selectedOutletDevices: List<Device?> = emptyList(),          // CHANGED: lifted up, no more outletLabelsText
+    onOutletDevicesChanged: (List<Device?>) -> Unit = {}         // CHANGED: reports selections to the parent
 ) {
     var expanded by remember { mutableStateOf(false) }
     var categoryExpanded by remember { mutableStateOf(false) }
@@ -963,12 +1019,16 @@ fun DevicePicker(
     Box {
         Column {
 
-            OutlinedButton(onClick = { expanded = true }) {
-                Text(selectedDevice?.name?.toString() ?: "Select a device")
-            }
             OutlinedButton(onClick = { categoryExpanded = true }) {
                 Text(category?.name ?: "Select a category")
             }
+
+            if (category != DeviceCategories.MULTISWITCH) {
+                OutlinedButton(onClick = { expanded = true }) {
+                    Text(selectedDevice?.name?.toString() ?: "Select a device")
+                }
+            }
+
             DropdownMenu(expanded = categoryExpanded, onDismissRequest = { categoryExpanded = false }) {
                 DeviceCategories.entries.forEach { categoryType ->
                     DropdownMenuItem(
@@ -1017,6 +1077,78 @@ fun DevicePicker(
                 onValueChange = onMaxDurationSelected,
                 label = { Text("Max ON minutes e.g. 30") }
             )
+
+            // NEW: multiswitch-only fields. A multiswitch is one physical unit with several
+            // independently switchable outlets underneath it (e.g. a power strip). The outlet
+            // count is a dropdown (1-5); once picked, each outlet gets its own device dropdown,
+            // same pattern as the top-level device picker above. selectedOutletDevices now lives
+            // in AddVirtualObjectScreen (the same place selectedDevice/selectedRoom live), so
+            // the Save button and the actual VirtualDevice construction can both see it --
+            // that's the piece that was missing before.
+            if (category == DeviceCategories.MULTISWITCH) {
+                var outletCountExpanded by remember { mutableStateOf(false) }
+                var outletDeviceExpandedIndex by remember { mutableStateOf(-1) }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("This is a multiswitch: how many outlets does it have?")
+                Box {
+                    OutlinedButton(onClick = { outletCountExpanded = true }) {
+                        Text(outletCountText.ifBlank { "Select number of outlets" })
+                    }
+                    DropdownMenu(expanded = outletCountExpanded, onDismissRequest = { outletCountExpanded = false }) {
+                        (1..5).forEach { count ->
+                            DropdownMenuItem(
+                                text = { Text(count.toString()) },
+                                onClick = {
+                                    onOutletCountSelected(count.toString())
+                                    // Resize the per-outlet picks, keeping any that still fit.
+                                    onOutletDevicesChanged(List(count) { i -> selectedOutletDevices.getOrNull(i) })
+                                    outletCountExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                val outletCount = outletCountText.toIntOrNull() ?: 0
+                if (outletCount > 0) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Link each outlet to a Firebase device:")
+                    for (i in 0 until outletCount) {
+                        // Don't let the same device be picked for two outlets.
+                        val pickedElsewhere = selectedOutletDevices
+                            .filterIndexed { idx, _ -> idx != i }
+                            .mapNotNull { it?.path }
+                        val outletAvailableDevices = availableDevices.filter { it.path !in pickedElsewhere }
+
+                        Box {
+                            OutlinedButton(onClick = { outletDeviceExpandedIndex = i }) {
+                                Text(selectedOutletDevices.getOrNull(i)?.name ?: "Outlet ${i + 1}: select a device")
+                            }
+                            DropdownMenu(
+                                expanded = outletDeviceExpandedIndex == i,
+                                onDismissRequest = { outletDeviceExpandedIndex = -1 }
+                            ) {
+                                if (outletAvailableDevices.isEmpty()) {
+                                    DropdownMenuItem(text = { Text("No unmapped devices") }, onClick = {})
+                                }
+                                outletAvailableDevices.forEach { device ->
+                                    DropdownMenuItem(
+                                        text = { Text(device.name) },
+                                        onClick = {
+                                            val updated = selectedOutletDevices.toMutableList()
+                                            while (updated.size <= i) updated.add(null)
+                                            updated[i] = device
+                                            onOutletDevicesChanged(updated)
+                                            outletDeviceExpandedIndex = -1
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1447,7 +1579,8 @@ fun RoomEditor(
             devicePlacements.forEach { pd ->
                 drawDeviceIcon(
                     category = pd.placement.category,
-                    center = Offset(pd.placement.position.x, pd.placement.position.y)
+                    center = Offset(pd.placement.position.x, pd.placement.position.y),
+                    badgeCount = pd.outletCount
                 )
             }
 
@@ -1535,9 +1668,10 @@ private fun categoryColor(category: DeviceCategories): Color = when (category) {
     DeviceCategories.LIGHT -> Color(0xFFFFC107)
     DeviceCategories.FAN -> Color(0xFF9575CD)
     DeviceCategories.CAMERA -> Color(0xFFEF5350)
+    DeviceCategories.MULTISWITCH -> Color(0xFFFF7043)
 }
 
-fun DrawScope.drawDeviceIcon(category: DeviceCategories, center: Offset, radius: Float = 14f) {
+fun DrawScope.drawDeviceIcon(category: DeviceCategories, center: Offset, radius: Float = 14f, badgeCount: Int? = null) {
     val bg = categoryColor(category)
     val glyphColor = Color.White
     val r = radius * 0.6f
@@ -1646,6 +1780,49 @@ fun DrawScope.drawDeviceIcon(category: DeviceCategories, center: Offset, radius:
                 size = Size(r * 0.3f, r * 0.2f),
                 cornerRadius = CornerRadius(r * 0.05f)
             )
+        }
+        DeviceCategories.MULTISWITCH -> {
+            // Two outlet-style slot pairs side by side + a base bar, to read as
+            // "several outlets" rather than a single one.
+            val slotW = r * 0.16f
+            val slotH = r * 0.6f
+            listOf(-r * 0.45f, r * 0.05f).forEach { groupOx ->
+                drawRoundRect(
+                    color = glyphColor,
+                    topLeft = Offset(center.x + groupOx - slotW / 2f, center.y - slotH / 2f),
+                    size = Size(slotW, slotH),
+                    cornerRadius = CornerRadius(slotW / 2f)
+                )
+                drawRoundRect(
+                    color = glyphColor,
+                    topLeft = Offset(center.x + groupOx + slotW * 0.9f - slotW / 2f, center.y - slotH / 2f),
+                    size = Size(slotW, slotH),
+                    cornerRadius = CornerRadius(slotW / 2f)
+                )
+            }
+            drawRoundRect(
+                color = glyphColor,
+                topLeft = Offset(center.x - r * 0.85f, center.y + slotH / 2f + r * 0.12f),
+                size = Size(r * 1.7f, r * 0.22f),
+                cornerRadius = CornerRadius(r * 0.1f)
+            )
+        }
+    }
+
+    // Small numbered badge in the corner -- only shown for actual multiswitches
+    // (badgeCount > 1). Ordinary single devices pass badgeCount = 1 and get nothing.
+    if (badgeCount != null && badgeCount > 1) {
+        val badgeCenter = Offset(center.x + radius * 0.85f, center.y - radius * 0.85f)
+        drawCircle(color = Color(0xFFD32F2F), radius = radius * 0.42f, center = badgeCenter)
+        drawCircle(color = Color.White, radius = radius * 0.42f, center = badgeCenter, style = Stroke(width = radius * 0.06f))
+        drawContext.canvas.nativeCanvas.apply {
+            val paint = android.graphics.Paint().apply {
+                color = android.graphics.Color.WHITE
+                textSize = radius * 0.5f
+                textAlign = android.graphics.Paint.Align.CENTER
+                isFakeBoldText = true
+            }
+            drawText(badgeCount.toString(), badgeCenter.x, badgeCenter.y + radius * 0.18f, paint)
         }
     }
 }
