@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -152,15 +153,15 @@ fun Main(){
                 NavigationBarItem(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
-                    icon = { Icon(Icons.Filled.Search, contentDescription = "Devices") },
+                    icon = { Icon(Icons.Filled.Search, contentDescription = "Navigate") },
                     label = { Text("Navigate") }
                 )
-                // --- Configurations tab ---
+
                 NavigationBarItem(
                     selected = selectedTab == 3,
                     onClick = { selectedTab = 3 },
-                    icon = { Icon(Icons.Filled.Settings, contentDescription = "Configurations") },
-                    label = { Text("Config") }
+                    icon = { Icon(Icons.Filled.BarChart, contentDescription = "Reports") },
+                    label = { Text("Reports") }
                 )
             }
         }
@@ -192,14 +193,7 @@ fun Main(){
                 )
             }
             3 -> {
-                Column(modifier = Modifier.fillMaxSize().padding(innerPadding)
-                ) {
-                    Button(
-                        onClick = { clearAllVirtualMappings(context) }
-                    ) {
-                        Text("Reset all virtual assignments")
-                    }
-                }
+                UsageReportsScreen(modifier = Modifier.padding(innerPadding))
             }
         }
     }

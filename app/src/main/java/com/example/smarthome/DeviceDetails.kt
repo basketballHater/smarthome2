@@ -276,7 +276,17 @@ fun toggleDeviceState(linkedPath: String, isChecked: Boolean) {
             val prevUsageDate = data.child("usageDate").getValue(String::class.java) ?: today
             val prevTodaySeconds = data.child("todayOnSeconds").getValue(Long::class.java) ?: 0L
 
-            var newTodaySeconds = if (prevUsageDate == today) prevTodaySeconds else 0L
+            var newTodaySeconds: Long
+            if (prevUsageDate == today) {
+                newTodaySeconds = prevTodaySeconds
+            } else {
+                // Day rolled over -- archive the previous day's total instead of
+                // discarding it, so Week/Month reports have something to sum.
+                if (prevTodaySeconds > 0) {
+                    data.child("History").child(prevUsageDate).value = prevTodaySeconds
+                }
+                newTodaySeconds = 0L
+            }
             if (prevStatus == DeviceStatus.ON) {
                 val elapsed = ((now - prevChangedAt) / 1000).coerceAtLeast(0)
                 newTodaySeconds += elapsed

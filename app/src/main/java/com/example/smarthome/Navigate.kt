@@ -165,6 +165,7 @@ fun Navigate(modifier: Modifier = Modifier, onDeviceSelected: (devicePath: Strin
     var devicePendingDelete by remember { mutableStateOf<VirtualDevice?>(null) }
     var objectType by remember { mutableIntStateOf(-1) }
     var showAddDialog by remember { mutableStateOf(false) }
+    var showResetConfirm by remember { mutableStateOf(false) }
     val context = LocalContext.current
     Column(
         modifier = modifier
@@ -577,8 +578,38 @@ fun Navigate(modifier: Modifier = Modifier, onDeviceSelected: (devicePath: Strin
 //                }
 //            }
 //        }
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Button(
+            onClick = { showResetConfirm = true },
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1C3A3E), contentColor = Color.White),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+        ) {
+            Icon(imageVector = Icons.Default.Delete, contentDescription = "Reset")
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Reset all Devices")
+        }
+        Spacer(modifier = Modifier.height(16.dp))
     }
 
+    if (showResetConfirm) {
+        AlertDialog(
+            onDismissRequest = { showResetConfirm = false },
+            title = { Text("Reset everything?") },
+            text = { Text("This deletes all mapped floors, rooms, and devices. This can't be undone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    clearAllVirtualMappings(context)
+                    showResetConfirm = false
+                }) { Text("Reset", color = Color.Red) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetConfirm = false }) { Text("Cancel") }
+            }
+        )
+    }
 
     floorPendingDelete?.let { floor ->
         AlertDialog(
