@@ -47,7 +47,12 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
-
+import android.content.Context
+import android.util.Log
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.ValueEventListener
 /**
  * One camera shown on the Security Center page.
  *
@@ -62,8 +67,17 @@ import androidx.media3.ui.PlayerView
 data class CameraFeed(
     val id: String,
     val name: String,
-    val videoUri: Uri?,
-    val isOnline: Boolean
+    val floorName: String,
+    val roomName: String,
+    val linkedPath: String,
+    val videoUri: Uri? = null,
+    val isOnline: Boolean = false
+)
+
+data class CameraRuntime(
+    val state: String = "OFF",
+    val videoUrl: String? = null,
+    val videoKey: String? = null
 )
 
 
@@ -71,6 +85,116 @@ private val OnlineGreen = Color(0xFF36D36E)
 private val OfflineRed = Color(0xFFD61F2C)
 private val OfflineCard = Color(0xFFE8E7EF)
 private val OfflineContent = Color(0xFFA8A8B2)
+
+private fun buildMappedCameraFeeds(): List<CameraFeed> {
+    return AppData.virtualDeviceList.mapNotNull { virtualDevice ->
+
+        val linkedPath = virtualDevice.linkedPath
+            ?: return@mapNotNull null
+
+        val parts = linkedPath.split("/")
+
+        // Floors/floor_01/Rooms/room_01/Cameras/camera_01
+        if (parts.size < 6 || !parts[4].equals("Cameras", ignoreCase = true)) {
+            return@mapNotNull null
+        }
+
+        val virtualFloor = AppData.virtualFloorList.firstOrNull { floor ->
+            floor.linkedPath?.let { linkedPath.startsWith("$it/") } == true
+        }
+
+        val virtualRoom = virtualFloor?.rooms?.firstOrNull { room ->
+            room.linkedPath?.let { linkedPath.startsWith("$it/") } == true
+        } ?: AppData.virtualRoomList.firstOrNull { room ->
+            room.linkedPath?.let { linkedPath.startsWith("$it/") } == true
+        }
+
+        CameraFeed(
+            // Full path is used because camera IDs can repeat on different floors.
+            id = linkedPath,
+            name = virtualDevice.customName,
+            floorName = virtualFloor?.customName ?: parts[1],
+            roomName = virtualRoom?.customName ?: parts[3],
+            linkedPath = linkedPath
+        )
+    }
+}
+
+@Composable
+private fun rememberCameraRuntime(linkedPath: String): CameraRuntime {
+    var runtime by remember(linkedPath) {
+        mutableStateOf(CameraRuntime())
+    }
+
+    DisposableEffect(linkedPath) {
+        val cameraReference = FirebaseDatabase.getInstance()
+            .getReference(linkedPath)
+
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                runtime = CameraRuntime(
+                    state = snapshot.child("state")
+                        .getValue(String::class.java)
+                        ?: "OFF",
+
+                    videoUrl = snapshot.child("videoUrl")
+                        .getValue(String::class.java),
+
+                    videoKey = snapshot.child("videoKey")
+                        .getValue(String::class.java)
+                )
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                runtime = CameraRuntime(state = "OFF")
+
+                Log.e(
+                    "CAMERA_SCREEN",
+                    "Failed to read camera: $linkedPath",
+                    error.toException()
+                )
+            }
+        }
+
+        cameraReference.addValueEventListener(listener)
+
+        onDispose {
+            cameraReference.removeEventListener(listener)
+        }
+    }
+
+    return runtime
+}
+
+private fun resolveCameraVideoUri(
+    context: Context,
+    linkedPath: String,
+    runtime: CameraRuntime
+): Uri? {
+    // Use an HTTPS/RTSP URL from Firebase if one exists.
+    runtime.videoUrl
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?.let { return Uri.parse(it) }
+
+    // Otherwise use a video from res/raw.
+    val cameraId = linkedPath.substringAfterLast("/")
+
+    val key = (runtime.videoKey ?: cameraId)
+        .lowercase()
+        .replace("-", "_")
+
+    val videoResource = when (key) {
+        "front_door", "camera_01" -> R.raw.front_door
+        "living_room", "camera_02" -> R.raw.living_room
+        "backyard", "camera_03" -> R.raw.backyard
+        else -> return null
+    }
+
+    return Uri.parse(
+        "android.resource://${context.packageName}/$videoResource"
+    )
+}
 
 /**
  * Add this composable as the content of the Cameras item in your bottom bar.
@@ -82,42 +206,11 @@ private val OfflineContent = Color(0xFFA8A8B2)
  */
 @Composable
 fun CameraScreen(modifier: Modifier = Modifier) {
-    val context = LocalContext.current
+    val cameraFeeds = buildMappedCameraFeeds()
 
-    val cameraFeeds = remember(context.packageName) {
-        listOf(
-            CameraFeed(
-                id = "front-door",
-                name = "Front Door",
-                videoUri = Uri.parse(
-                    "android.resource://${context.packageName}/${R.raw.front_door}"
-                ),
-                isOnline = true
-            ),
-            CameraFeed(
-                id = "living-room",
-                name = "Living Room",
-                videoUri = Uri.parse(
-                    "android.resource://${context.packageName}/${R.raw.living_room}"
-                ),
-                isOnline = true
-            ),
-            CameraFeed(
-                id = "backyard",
-                name = "Backyard",
-                videoUri = Uri.parse(
-                    "android.resource://${context.packageName}/${R.raw.backyard}"
-                ),
-                isOnline = true
-            ),
-            CameraFeed(
-                id = "garage",
-                name = "Garage",
-                videoUri = null,
-                isOnline = false
-            )
-        )
-    }
+    val camerasByFloor = cameraFeeds
+        .groupBy { it.floorName }
+        .toSortedMap()
 
     LazyColumn(
         modifier = modifier
@@ -128,31 +221,97 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     ) {
         item {
             Spacer(modifier = Modifier.height(24.dp))
+
             Text(
                 text = "Security Center",
                 color = Color.White,
                 fontSize = 31.sp,
                 fontWeight = FontWeight.Bold
             )
+
             Text(
-                text = "Live surveillance and environmental safety\nmonitoring.",
+                text = "Live surveillance cameras from every floor.",
                 color = Color.White,
                 fontSize = 16.sp,
                 lineHeight = 24.sp
             )
+
             Spacer(modifier = Modifier.height(14.dp))
         }
 
-        items(cameraFeeds, key = { it.id }) { feed ->
-            if (feed.isOnline && feed.videoUri != null) {
-                LiveCameraCard(feed = feed)
-            } else {
-                OfflineCameraCard(feed = feed)
+        if (cameraFeeds.isEmpty()) {
+            item {
+                Text(
+                    text = "No cameras have been mapped.",
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    modifier = Modifier.padding(vertical = 32.dp)
+                )
+            }
+        }
+
+        camerasByFloor.forEach { (floorName, floorCameras) ->
+            item(key = "floor-$floorName") {
+                Text(
+                    text = floorName,
+                    color = Color.White,
+                    fontSize = 21.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+
+            items(
+                items = floorCameras,
+                key = { it.id }
+            ) { feed ->
+                CameraFeedItem(feed)
             }
         }
 
         item {
             Spacer(modifier = Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun CameraFeedItem(feed: CameraFeed) {
+    val context = LocalContext.current
+    val runtime = rememberCameraRuntime(feed.linkedPath)
+
+    val isOnline = runtime.state.equals(
+        other = "ON",
+        ignoreCase = true
+    )
+
+    val videoUri = remember(
+        feed.linkedPath,
+        runtime.videoUrl,
+        runtime.videoKey,
+        context.packageName
+    ) {
+        resolveCameraVideoUri(
+            context = context,
+            linkedPath = feed.linkedPath,
+            runtime = runtime
+        )
+    }
+
+    val currentFeed = feed.copy(
+        isOnline = isOnline,
+        videoUri = videoUri
+    )
+
+    when {
+        isOnline && videoUri != null -> {
+            // ExoPlayer is created only in this branch.
+            LiveCameraCard(feed = currentFeed)
+        }
+
+        else -> {
+            // No ExoPlayer and no video while the camera is OFF.
+            OfflineCameraCard(feed = currentFeed)
         }
     }
 }
@@ -252,13 +411,22 @@ private fun LiveCameraCard(
                     .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(4.dp))
                     .padding(horizontal = 9.dp, vertical = 5.dp)
             )
-            Text(
-                text = feed.name,
-                color = Color.White,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
+            Column(
                 modifier = Modifier.padding(start = 9.dp)
-            )
+            ) {
+                Text(
+                    text = feed.name,
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Text(
+                    text = feed.roomName,
+                    color = Color.White.copy(alpha = 0.75f),
+                    fontSize = 11.sp
+                )
+            }
         }
 
         Row(
@@ -332,13 +500,22 @@ private fun OfflineCameraCard(
             .background(OfflineCard)
             .padding(16.dp)
     ) {
-        Text(
-            text = feed.name,
-            color = Color(0xFF565561),
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold,
+        Column(
             modifier = Modifier.align(Alignment.TopStart)
-        )
+        ) {
+            Text(
+                text = feed.name,
+                color = Color(0xFF565561),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = "${feed.floorName} · ${feed.roomName}",
+                color = OfflineContent,
+                fontSize = 11.sp
+            )
+        }
 
         Row(
             modifier = Modifier.align(Alignment.TopEnd),
