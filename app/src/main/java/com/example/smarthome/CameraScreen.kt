@@ -47,12 +47,16 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+<<<<<<< Updated upstream
 import android.content.Context
 import android.util.Log
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
+=======
+
+>>>>>>> Stashed changes
 /**
  * One camera shown on the Security Center page.
  *
@@ -67,6 +71,7 @@ import com.google.firebase.database.ValueEventListener
 data class CameraFeed(
     val id: String,
     val name: String,
+<<<<<<< Updated upstream
     val floorName: String,
     val roomName: String,
     val linkedPath: String,
@@ -78,6 +83,10 @@ data class CameraRuntime(
     val state: String = "OFF",
     val videoUrl: String? = null,
     val videoKey: String? = null
+=======
+    val videoUri: Uri?,
+    val isOnline: Boolean
+>>>>>>> Stashed changes
 )
 
 
@@ -86,6 +95,7 @@ private val OfflineRed = Color(0xFFD61F2C)
 private val OfflineCard = Color(0xFFE8E7EF)
 private val OfflineContent = Color(0xFFA8A8B2)
 
+<<<<<<< Updated upstream
 private fun buildMappedCameraFeeds(): List<CameraFeed> {
     return AppData.virtualDeviceList.mapNotNull { virtualDevice ->
 
@@ -312,6 +322,8 @@ private fun resolveCameraVideoUri(
     )
 }
 
+=======
+>>>>>>> Stashed changes
 /**
  * Add this composable as the content of the Cameras item in your bottom bar.
  *
@@ -322,6 +334,7 @@ private fun resolveCameraVideoUri(
  */
 @Composable
 fun CameraScreen(modifier: Modifier = Modifier) {
+<<<<<<< Updated upstream
     val cameraFeeds = buildMappedCameraFeeds()
 
     Log.e(
@@ -332,6 +345,44 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     val camerasByFloor = cameraFeeds
         .groupBy { it.floorName }
         .toSortedMap()
+=======
+    val context = LocalContext.current
+
+    val cameraFeeds = remember(context.packageName) {
+        listOf(
+            CameraFeed(
+                id = "front-door",
+                name = "Front Door",
+                videoUri = Uri.parse(
+                    "android.resource://${context.packageName}/${R.raw.front_door}"
+                ),
+                isOnline = true
+            ),
+            CameraFeed(
+                id = "living-room",
+                name = "Living Room",
+                videoUri = Uri.parse(
+                    "android.resource://${context.packageName}/${R.raw.living_room}"
+                ),
+                isOnline = true
+            ),
+            CameraFeed(
+                id = "backyard",
+                name = "Backyard",
+                videoUri = Uri.parse(
+                    "android.resource://${context.packageName}/${R.raw.backyard}"
+                ),
+                isOnline = true
+            ),
+            CameraFeed(
+                id = "garage",
+                name = "Garage",
+                videoUri = null,
+                isOnline = false
+            )
+        )
+    }
+>>>>>>> Stashed changes
 
     LazyColumn(
         modifier = modifier
@@ -342,20 +393,29 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     ) {
         item {
             Spacer(modifier = Modifier.height(24.dp))
+<<<<<<< Updated upstream
 
+=======
+>>>>>>> Stashed changes
             Text(
                 text = "Security Center",
                 color = Color.White,
                 fontSize = 31.sp,
                 fontWeight = FontWeight.Bold
             )
+<<<<<<< Updated upstream
 
             Text(
                 text = "Live surveillance cameras from every floor.",
+=======
+            Text(
+                text = "Live surveillance and environmental safety\nmonitoring.",
+>>>>>>> Stashed changes
                 color = Color.White,
                 fontSize = 16.sp,
                 lineHeight = 24.sp
             )
+<<<<<<< Updated upstream
 
             Spacer(modifier = Modifier.height(14.dp))
         }
@@ -387,6 +447,16 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                 key = { it.id }
             ) { feed ->
                 CameraFeedItem(feed)
+=======
+            Spacer(modifier = Modifier.height(14.dp))
+        }
+
+        items(cameraFeeds, key = { it.id }) { feed ->
+            if (feed.isOnline && feed.videoUri != null) {
+                LiveCameraCard(feed = feed)
+            } else {
+                OfflineCameraCard(feed = feed)
+>>>>>>> Stashed changes
             }
         }
 
@@ -396,6 +466,7 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     }
 }
 
+<<<<<<< Updated upstream
 @Composable
 private fun CameraFeedItem(feed: CameraFeed) {
     val context = LocalContext.current
@@ -441,6 +512,8 @@ private fun CameraFeedItem(feed: CameraFeed) {
     }
 }
 
+=======
+>>>>>>> Stashed changes
 @OptIn(UnstableApi::class)
 @Composable
 private fun LiveCameraCard(
@@ -449,8 +522,13 @@ private fun LiveCameraCard(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+<<<<<<< Updated upstream
     var playbackState by remember(feed.id, feed.videoUri) { mutableIntStateOf(Player.STATE_IDLE) }
     var playbackError by remember(feed.id, feed.videoUri) { mutableStateOf<PlaybackException?>(null) }
+=======
+    var playbackState by remember(feed.id) { mutableIntStateOf(Player.STATE_IDLE) }
+    var playbackError by remember(feed.id) { mutableStateOf<PlaybackException?>(null) }
+>>>>>>> Stashed changes
 
     val player = remember(feed.id, feed.videoUri) {
         ExoPlayer.Builder(context).build().apply {
@@ -536,6 +614,7 @@ private fun LiveCameraCard(
                     .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(4.dp))
                     .padding(horizontal = 9.dp, vertical = 5.dp)
             )
+<<<<<<< Updated upstream
             Column(
                 modifier = Modifier.padding(start = 9.dp)
             ) {
@@ -552,6 +631,15 @@ private fun LiveCameraCard(
                     fontSize = 11.sp
                 )
             }
+=======
+            Text(
+                text = feed.name,
+                color = Color.White,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(start = 9.dp)
+            )
+>>>>>>> Stashed changes
         }
 
         Row(
@@ -625,6 +713,7 @@ private fun OfflineCameraCard(
             .background(OfflineCard)
             .padding(16.dp)
     ) {
+<<<<<<< Updated upstream
         Column(
             modifier = Modifier.align(Alignment.TopStart)
         ) {
@@ -641,6 +730,15 @@ private fun OfflineCameraCard(
                 fontSize = 11.sp
             )
         }
+=======
+        Text(
+            text = feed.name,
+            color = Color(0xFF565561),
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.align(Alignment.TopStart)
+        )
+>>>>>>> Stashed changes
 
         Row(
             modifier = Modifier.align(Alignment.TopEnd),
@@ -671,7 +769,11 @@ private fun OfflineCameraCard(
                 modifier = Modifier.size(49.dp)
             )
             Text(
+<<<<<<< Updated upstream
                 text = "Camera is turned off",
+=======
+                text = "Signal Lost",
+>>>>>>> Stashed changes
                 color = OfflineContent,
                 fontSize = 15.sp,
                 modifier = Modifier.padding(top = 8.dp)
