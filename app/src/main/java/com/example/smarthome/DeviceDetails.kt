@@ -110,6 +110,11 @@ private val categoryLabelToFirebaseKey = mapOf(
 // truth for the floor dropdown, room dropdown, category chips, and the
 // connected-devices list -- we no longer scan Firebase's Floors tree
 // directly to build this screen's structure.
+//
+// outletCount > 1 marks this entry as a MULTISWITCH: its own linkedPath has
+// no direct "state" leaf, it's a parent node with outlet_1, outlet_2, ...
+// children underneath. Everywhere that reads/writes state directly against
+// entry.linkedPath needs to check outletCount first.
 // ===================================================================
 data class DeviceEntry(
     val virtualId: String,   // AppData.virtualDeviceList entry's id
@@ -122,7 +127,9 @@ data class DeviceEntry(
     val linkedPath: String,  // real Firebase path: "Floors/{floorId}/Rooms/{roomId}/{category}/{deviceId}"
     val floorName: String?,  // custom name from AppData.virtualFloorList, null if not saved
     val roomName: String?,
-    val maxOnDurationSeconds: Long?// custom name from AppData.virtualRoomList, null if not saved
+    val maxOnDurationSeconds: Long?,// custom name from AppData.virtualRoomList, null if not saved
+    val outletCount: Int = 1,          // NEW: >1 means this entry is a multiswitch
+    val outletLabels: List<String>? = null // NEW: optional custom outlet names
 )
 
 data class DeviceUsage(
@@ -174,7 +181,9 @@ fun rememberVirtualDeviceEntries(): List<DeviceEntry> {
             linkedPath = path,
             floorName = virtualFloorNameForPath(path),
             roomName = virtualRoomNameForPath(path),
-            maxOnDurationSeconds = vd.maxOnDurationSeconds
+            maxOnDurationSeconds = vd.maxOnDurationSeconds,
+            outletCount = vd.outletCount,
+            outletLabels = vd.outletLabels
         )
     }
 }
@@ -234,6 +243,16 @@ fun rememberDeviceUsage(linkedPath: String): DeviceUsage {
         onDispose { ref.removeEventListener(listener) }
     }
     return usage
+}
+
+/**
+ * Same as rememberDeviceUsage, but for all N outlets underneath a multiswitch's
+ * base path at once: basePath/outlet_1 .. basePath/outlet_N. Returned in order,
+ * so index i corresponds to outlet_(i+1).
+ */
+@Composable
+fun rememberOutletUsages(basePath: String, count: Int): List<DeviceUsage> {
+    return (1..count).map { i -> rememberDeviceUsage("$basePath/outlet_$i") }
 }
 
 // Recomposes callers once a minute so live durations keep advancing on screen
@@ -407,6 +426,11 @@ fun CategoryFilterRow(
 
 // ===================================================================
 // DEVICE DETAIL CARD: icon, name/location, toggle, usage stats
+//
+// showToggle = false is used for multiswitch parents: there's no single
+// on/off state to bind a Switch to (the real state lives one level down,
+// per-outlet), so the switch is hidden and todayUsageKwh/onForLabel are
+// expected to already be aggregates the caller computed across all outlets.
 // ===================================================================
 
 @Composable
@@ -421,7 +445,8 @@ fun DeviceDetailCard(
     wattage: Double,
     maxOnDurationSeconds: Long?,
     onSaveEdits: (newName: String, newWattage: Double, newMaxDurationSeconds: Long?) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    showToggle: Boolean = true
 ) {
     var isEditing by remember { mutableStateOf(false) }
     var editName by remember(deviceName, isEditing) { mutableStateOf(deviceName) }
@@ -507,7 +532,7 @@ fun DeviceDetailCard(
                         }
                     }
 
-                    if (!isEditing) {
+                    if (!isEditing && showToggle) {
                         Switch(
                             checked = deviceStatus == DeviceStatus.ON,
                             onCheckedChange = onToggle,
@@ -621,6 +646,50 @@ fun ConnectedDeviceRow(
     entry: DeviceEntry,
     modifier: Modifier = Modifier
 ) {
+    // Multiswitches don't have a single state at entry.linkedPath (that path is
+    // just the parent node), so there's nothing valid to bind a Switch to here.
+    // Show a summary instead -- opening the multiswitch's own Device Details
+    // page (via the floor plan) is where each outlet gets its own toggle.
+    if (entry.outletCount > 1) {
+        Row(
+            modifier = modifier
+                .fillMaxWidth()
+                .background(SmartHomeColors.IconCircleBackground, RoundedCornerShape(14.dp))
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .background(SmartHomeColors.CardBackground, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = iconFor(entry.category),
+                    contentDescription = entry.category,
+                    tint = SmartHomeColors.IconAsh,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = entry.customName, color = SmartHomeColors.TextPrimary, fontSize = 14.sp)
+                Text(
+                    text = "${entry.floorName ?: entry.floorId} · ${entry.roomName ?: entry.roomId}",
+                    color = SmartHomeColors.TextPrimary.copy(alpha = 0.6f),
+                    fontSize = 11.sp
+                )
+            }
+            Text(
+                text = "${entry.outletCount} outlets",
+                color = SmartHomeColors.TextPrimary.copy(alpha = 0.8f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
+        return
+    }
+
     val usage = rememberDeviceUsage(entry.linkedPath)
 
     Row(
@@ -661,6 +730,115 @@ fun ConnectedDeviceRow(
                 uncheckedThumbColor = SmartHomeColors.TextSecondary
             )
         )
+    }
+}
+
+// ===================================================================
+// OUTLET ROW: one individually-controllable outlet within a multiswitch.
+// Mirrors ConnectedDeviceRow's look, but takes an already-fetched DeviceUsage
+// instead of subscribing itself, so a whole multiswitch section only opens
+// one Firebase listener per outlet (shared with the aggregate header math)
+// rather than duplicating listeners between the header and each row.
+// ===================================================================
+
+@Composable
+private fun OutletRow(
+    label: String,
+    outletPath: String,
+    usage: DeviceUsage,
+    maxOnDurationSeconds: Long?,
+    modifier: Modifier = Modifier
+) {
+    val now = rememberTicker()
+    val status = DeviceStatus.fromString(usage.state)
+
+    val onForSeconds = remember(usage, now) {
+        if (status == DeviceStatus.ON) ((now - usage.lastChangedAt) / 1000).coerceAtLeast(0) else 0L
+    }
+
+    // Same fire-hazard cutoff behaviour as a normal device, just scoped to this
+    // one outlet's own path. The multiswitch's maxOnDurationSeconds field applies
+    // uniformly to every outlet underneath it (there's no per-outlet override yet).
+    var showSafetyAlert by remember(outletPath) { mutableStateOf(false) }
+    var cutoffTripped by remember(outletPath, usage.lastChangedAt) { mutableStateOf(false) }
+
+    LaunchedEffect(status, onForSeconds) {
+        if (status == DeviceStatus.ON && maxOnDurationSeconds != null && maxOnDurationSeconds > 0
+            && onForSeconds >= maxOnDurationSeconds && !cutoffTripped) {
+            cutoffTripped = true
+            toggleDeviceState(outletPath, false)
+            showSafetyAlert = true
+        }
+    }
+
+    if (showSafetyAlert) {
+        AlertDialog(
+            onDismissRequest = { showSafetyAlert = false },
+            title = { Text("Safety cutoff triggered") },
+            text = { Text("$label was automatically turned off after exceeding its maximum safe ON duration.") },
+            confirmButton = { TextButton(onClick = { showSafetyAlert = false }) { Text("OK") } }
+        )
+    }
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(SmartHomeColors.IconCircleBackground, RoundedCornerShape(14.dp))
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, color = SmartHomeColors.TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            Text(
+                text = if (status == DeviceStatus.ON) "On for ${formatDuration(onForSeconds)}" else "Off",
+                color = SmartHomeColors.TextPrimary.copy(alpha = 0.6f),
+                fontSize = 11.sp
+            )
+        }
+        Switch(
+            checked = status == DeviceStatus.ON,
+            enabled = status.isControllable,
+            onCheckedChange = { isChecked -> if (status.isControllable) toggleDeviceState(outletPath, isChecked) },
+            colors = SwitchDefaults.colors(
+                checkedTrackColor = SmartHomeColors.AccentTeal,
+                checkedThumbColor = SmartHomeColors.TextPrimary,
+                uncheckedTrackColor = SmartHomeColors.StatBoxBackground,
+                uncheckedThumbColor = SmartHomeColors.TextSecondary
+            )
+        )
+    }
+}
+
+// The full outlet list for a multiswitch, shown below its header card on the
+// Device Details page.
+@Composable
+fun MultiswitchOutletsSection(
+    linkedPath: String,
+    outletCount: Int,
+    outletLabels: List<String>?,
+    outletUsages: List<DeviceUsage>,
+    maxOnDurationSeconds: Long?,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = "Outlets",
+            color = SmartHomeColors.TextPrimary,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        for (i in 1..outletCount) {
+//            val label = outletLabels?.getOrNull(i - 1)?.takeIf { it.isNotBlank() } ?: "Outlet $i"
+            val label = "Switch $i"
+            OutletRow(
+                label = label,
+                outletPath = "$linkedPath/outlet_$i",
+                usage = outletUsages.getOrElse(i - 1) {
+                    DeviceUsage("off", System.currentTimeMillis(), currentDateString(), 0L)
+                },
+                maxOnDurationSeconds = maxOnDurationSeconds
+            )
+        }
     }
 }
 
@@ -780,11 +958,19 @@ fun DeviceDetailScreen(
     val matchingVirtual = virtualDevices.find { it.linkedPath == fullDevicePath }
     val cardCategory = matchingVirtual?.category ?: (pathParts.getOrNull(4) ?: "Lights")
     val cardName = matchingVirtual?.customName ?: deviceId
+    val isMultiswitch = (matchingVirtual?.outletCount ?: 1) > 1
 
     val usage = rememberDeviceUsage(fullDevicePath)
     val now = rememberTicker()
 
     val currentStatus = DeviceStatus.fromString(usage.state)
+
+    // Per-outlet usages, only fetched when this device actually is a multiswitch.
+    // Shared between the header's aggregate stats and each OutletRow below so we
+    // don't open two Firebase listeners per outlet.
+    val outletUsages = if (isMultiswitch) {
+        rememberOutletUsages(fullDevicePath, matchingVirtual!!.outletCount)
+    } else emptyList()
 
     val liveOnSecondsToday = remember(usage, now) {
         val today = currentDateString()
@@ -804,36 +990,74 @@ fun DeviceDetailScreen(
         if (currentStatus == DeviceStatus.ON) ((now - usage.lastChangedAt) / 1000).coerceAtLeast(0) else 0L
     }
 
+    // Single-device safety cutoff (fires the parent path's own "state"). Only meaningful
+    // for ordinary (non-multiswitch) devices -- a multiswitch's parent path has no real
+    // state of its own, so this block is skipped entirely and each OutletRow inside
+    // MultiswitchOutletsSection runs its own independent cutoff check instead.
     var showSafetyAlert by remember(fullDevicePath) { mutableStateOf(false) }
     var cutoffTripped by remember(fullDevicePath, usage.lastChangedAt) { mutableStateOf(false) }
 
-    LaunchedEffect(currentStatus, onForSeconds) {
-        val maxDuration = matchingVirtual?.maxOnDurationSeconds
-        if (currentStatus == DeviceStatus.ON && maxDuration != null && maxDuration > 0
-            && onForSeconds >= maxDuration && !cutoffTripped) {
-            cutoffTripped = true
-            toggleDeviceState(fullDevicePath, false)
-            showSafetyAlert = true
+    if (!isMultiswitch) {
+        LaunchedEffect(currentStatus, onForSeconds) {
+            val maxDuration = matchingVirtual?.maxOnDurationSeconds
+            if (currentStatus == DeviceStatus.ON && maxDuration != null && maxDuration > 0
+                && onForSeconds >= maxDuration && !cutoffTripped) {
+                cutoffTripped = true
+                toggleDeviceState(fullDevicePath, false)
+                showSafetyAlert = true
+            }
+        }
+
+        if (showSafetyAlert) {
+            AlertDialog(
+                onDismissRequest = { showSafetyAlert = false },
+                title = { Text("Safety cutoff triggered") },
+                text = { Text("$cardName was automatically turned off after exceeding its maximum safe ON duration.") },
+                confirmButton = {
+                    TextButton(onClick = { showSafetyAlert = false }) { Text("OK") }
+                }
+            )
         }
     }
 
-    if (showSafetyAlert) {
-        AlertDialog(
-            onDismissRequest = { showSafetyAlert = false },
-            title = { Text("Safety cutoff triggered") },
-            text = { Text("$cardName was automatically turned off after exceeding its maximum safe ON duration.") },
-            confirmButton = {
-                TextButton(onClick = { showSafetyAlert = false }) { Text("OK") }
-            }
-        )
-    }
-
     val wattage = matchingVirtual?.wattage ?: 0.0
-    val todayUsageKwh = (liveOnSecondsToday / 3600.0) * (wattage / 1000.0)
-    val usageLabel = when {
-        wattage <= 0 -> "—"
-        todayUsageKwh < 0.01 -> "%.1f Wh".format(todayUsageKwh * 1000)
-        else -> "%.2f kWh".format(todayUsageKwh)
+
+    // Aggregate stats for a multiswitch header: how many outlets are on, and the
+    // sum of today's usage across all of them (each outlet assumed to draw the
+    // same wattage as the unit's own wattage field, since outlets don't have
+    // individual wattage yet).
+    val onOutletCount = if (isMultiswitch) outletUsages.count { DeviceStatus.fromString(it.state) == DeviceStatus.ON } else 0
+    val aggregateTodayUsageKwh = if (isMultiswitch) {
+        outletUsages.sumOf { u ->
+            val today = currentDateString()
+            val base = if (u.usageDate == today) u.todayOnSeconds else 0L
+            val extra = if (DeviceStatus.fromString(u.state) == DeviceStatus.ON) {
+                ((now - u.lastChangedAt) / 1000).coerceAtLeast(0)
+            } else 0L
+            (base + extra) / 3600.0 * (wattage / 1000.0)
+        }
+    } else 0.0
+
+    val todayUsageKwh: String
+    val onForLabel: String
+    val headerStatus: DeviceStatus
+
+    if (isMultiswitch) {
+        headerStatus = if (onOutletCount > 0) DeviceStatus.ON else DeviceStatus.OFF
+        todayUsageKwh = when {
+            wattage <= 0 -> "—"
+            aggregateTodayUsageKwh < 0.01 -> "%.1f Wh".format(aggregateTodayUsageKwh * 1000)
+            else -> "%.2f kWh".format(aggregateTodayUsageKwh)
+        }
+        onForLabel = "$onOutletCount/${matchingVirtual!!.outletCount} ON"
+    } else {
+        headerStatus = currentStatus
+        todayUsageKwh = when {
+            wattage <= 0 -> "—"
+            (liveOnSecondsToday / 3600.0 * (wattage / 1000.0)) < 0.01 -> "%.1f Wh".format((liveOnSecondsToday / 3600.0) * wattage)
+            else -> "%.2f kWh".format((liveOnSecondsToday / 3600.0) * (wattage / 1000.0))
+        }
+        onForLabel = if (currentStatus == DeviceStatus.ON) formatDuration(onForSeconds) else "Off"
     }
 
     val context = LocalContext.current
@@ -877,14 +1101,14 @@ fun DeviceDetailScreen(
             deviceName = cardName,
             location = "${matchingVirtual?.floorName ?: initialFloorName} · ${matchingVirtual?.roomName ?: initialRoomName}",
             category = cardCategory,
-            deviceStatus = currentStatus,
+            deviceStatus = headerStatus,
             onToggle = { isChecked ->
-                if (currentStatus.isControllable) {
+                if (!isMultiswitch && currentStatus.isControllable) {
                     toggleDeviceState(fullDevicePath, isChecked)
                 }
             },
-            todayUsageKwh = usageLabel,
-            onForLabel = if (currentStatus == DeviceStatus.ON) formatDuration(onForSeconds) else "Off",
+            todayUsageKwh = todayUsageKwh,
+            onForLabel = onForLabel,
             wattage = wattage,
             maxOnDurationSeconds = matchingVirtual?.maxOnDurationSeconds,   // NEW
             onSaveEdits = { newName, newWattage, newMaxDurationSeconds: Long? ->    // CHANGED
@@ -899,8 +1123,20 @@ fun DeviceDetailScreen(
                         VirtualStorage.save(context)
                     }
                 }
-            }
+            },
+            showToggle = !isMultiswitch
         )
+
+        if (isMultiswitch && matchingVirtual != null) {
+            Spacer(modifier = Modifier.height(16.dp))
+            MultiswitchOutletsSection(
+                linkedPath = fullDevicePath,
+                outletCount = matchingVirtual.outletCount,
+                outletLabels = matchingVirtual.outletLabels,
+                outletUsages = outletUsages,
+                maxOnDurationSeconds = matchingVirtual.maxOnDurationSeconds
+            )
+        }
 
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -950,4 +1186,3 @@ fun DeviceDetailScreen(
         }
     }
 }
-

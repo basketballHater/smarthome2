@@ -69,14 +69,33 @@ data class Room(
     val path: String
 )
 
+// NOTE ON MULTISWITCHES:
+// A "multiswitch" is a single physical unit that controls several independently
+// switchable outlets (e.g. a power strip). It is still represented by exactly ONE
+// VirtualDevice/DevicePlacement (one dot on the floor plan, one entry in
+// virtualDeviceList) -- outletCount just tells the rest of the app how many
+// individually-controllable outlet leaves live underneath its linkedPath.
+//
+// outletCount == 1 (the default) means "ordinary single device" -- nothing about
+// existing devices changes.
+//
+// When outletCount > 1, the real Firebase data is expected to look like:
+//   {linkedPath}/outlet_1/{state, lastChangedAt, todayOnSeconds, usageDate}
+//   {linkedPath}/outlet_2/{state, lastChangedAt, todayOnSeconds, usageDate}
+//   ...
+// i.e. linkedPath itself is a parent node with no direct "state" leaf of its own.
 data class VirtualDevice(
     val id: String,          // you generate this, e.g. "vdev1"
     val customName: String,  // name the user picks
     val linkedPath: String?,  // path of the real Device it's mapped to, null = not mapped yet
     val wattage: Double,
     val position: Point,
-    val maxOnDurationSeconds: Long? = null
+    val maxOnDurationSeconds: Long? = null,
+    val outletCount: Int = 1,               // NEW: >1 marks this as a multiswitch
+    val outletLabels: List<String>? = null  // NEW: optional custom names, index 0 = outlet_1, etc.
 )
+
+val VirtualDevice.isMultiswitch: Boolean get() = outletCount > 1
 
 data class VirtualRoom(
     val id: String,
@@ -233,8 +252,13 @@ object VirtualStorage {
 
         prefs.getString("devices", null)?.let { json ->
             val type = object : TypeToken<List<VirtualDevice>>() {}.type
+            val loaded: List<VirtualDevice> = gson.fromJson(json, type)
             AppData.virtualDeviceList.clear()
-            AppData.virtualDeviceList.addAll(gson.fromJson(json, type))
+            // Gson bypasses the Kotlin constructor when deserializing, so a device saved
+            // before outletCount existed comes back with outletCount == 0 (Int's raw JVM
+            // default), not the Kotlin default of 1. Normalize here so nothing downstream
+            // ever needs to special-case "0" vs "1" as meaning "ordinary device".
+            AppData.virtualDeviceList.addAll(loaded.map { if (it.outletCount < 1) it.copy(outletCount = 1) else it })
         }
         prefs.getString("rooms", null)?.let { json ->
             val type = object : TypeToken<List<VirtualRoom>>() {}.type
