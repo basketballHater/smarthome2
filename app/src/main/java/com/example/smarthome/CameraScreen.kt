@@ -132,16 +132,37 @@ private fun rememberCameraRuntime(linkedPath: String): CameraRuntime {
 
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
-                runtime = CameraRuntime(
-                    state = snapshot.child("state")
-                        .getValue(String::class.java)
-                        ?: "OFF",
+                val rawState = snapshot.child("state").value
 
+                val normalizedState = when (rawState) {
+                    is Boolean -> if (rawState) "ON" else "OFF"
+
+                    is Number -> if (rawState.toInt() == 1) {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
+
+                    is String -> when (rawState.trim().uppercase()) {
+                        "ON", "TRUE", "1" -> "ON"
+                        else -> "OFF"
+                    }
+
+                    else -> "OFF"
+                }
+
+                runtime = CameraRuntime(
+                    state = normalizedState,
                     videoUrl = snapshot.child("videoUrl")
                         .getValue(String::class.java),
-
                     videoKey = snapshot.child("videoKey")
                         .getValue(String::class.java)
+                )
+
+                Log.e(
+                    "CAMERA_STATE",
+                    "path=${linkedPath}, state=${normalizedState}, " +
+                            "videoKey=${runtime.videoKey}"
                 )
             }
 
@@ -150,7 +171,7 @@ private fun rememberCameraRuntime(linkedPath: String): CameraRuntime {
 
                 Log.e(
                     "CAMERA_SCREEN",
-                    "Failed to read camera: $linkedPath",
+                    "Failed to read camera: ${linkedPath}",
                     error.toException()
                 )
             }
@@ -166,33 +187,128 @@ private fun rememberCameraRuntime(linkedPath: String): CameraRuntime {
     return runtime
 }
 
+fun writeCameraState(linkedPath: String, isOn: Boolean) {
+    val newState = if (isOn) "ON" else "OFF"
+    val statePath = "${linkedPath}/state"
+
+    FirebaseDatabase.getInstance()
+        .getReference(statePath)
+        .setValue(newState)
+        .addOnSuccessListener {
+            Log.e(
+                "CAMERA_SWITCH",
+                "Updated ${statePath} to ${newState}"
+            )
+        }
+        .addOnFailureListener { error ->
+            Log.e(
+                "CAMERA_SWITCH",
+                "Failed to update ${statePath}",
+                error
+            )
+        }
+}
+
 private fun resolveCameraVideoUri(
     context: Context,
-    linkedPath: String,
+    feed: CameraFeed,
     runtime: CameraRuntime
 ): Uri? {
-    // Use an HTTPS/RTSP URL from Firebase if one exists.
+    val realDeviceName = AppData.deviceList
+        .firstOrNull { device -> device.path == feed.linkedPath }
+        ?.name
+        .orEmpty()
+
+    // A configured remote stream has first priority.
     runtime.videoUrl
         ?.trim()
         ?.takeIf { it.isNotEmpty() }
-        ?.let { return Uri.parse(it) }
+        ?.let { url ->
+            Log.e(
+                "CAMERA_VIDEO",
+                "camera=${feed.name}, using videoUrl=${url}"
+            )
+            return Uri.parse(url)
+        }
 
-    // Otherwise use a video from res/raw.
-    val cameraId = linkedPath.substringAfterLast("/")
+    val firebaseKey = runtime.videoKey
+        ?.trim()
+        ?.lowercase()
+        ?.replace("-", "_")
+        ?.replace(" ", "_")
 
-    val key = (runtime.videoKey ?: cameraId)
-        .lowercase()
+    val cameraInformation = buildString {
+        append(feed.name)
+        append(" ")
+        append(feed.roomName)
+        append(" ")
+        append(feed.linkedPath)
+    }.lowercase()
         .replace("-", "_")
+        .replace(" ", "_")
 
-    val videoResource = when (key) {
-        "front_door", "camera_01" -> R.raw.front_door
-        "living_room", "camera_02" -> R.raw.living_room
-        "backyard", "camera_03" -> R.raw.backyard
-        else -> return null
+    // The requested generated-device mapping has first priority. Other cameras
+    // use Firebase videoKey, custom camera/room name, or a unique camera ID.
+    val selectedKey = when {
+        realDeviceName.equals(
+            other = "F-0-R-2-Camera-1",
+            ignoreCase = true
+        ) -> {
+            "living_room"
+        }
+
+        firebaseKey != null -> {
+            firebaseKey
+        }
+
+        cameraInformation.contains("front_door") ||
+                cameraInformation.contains("front") ||
+                cameraInformation.contains("entrance") -> {
+            "front_door"
+        }
+
+        cameraInformation.contains("living_room") ||
+                cameraInformation.contains("living") -> {
+            "living_room"
+        }
+
+        cameraInformation.contains("kitchen") -> {
+            "kitchen"
+        }
+
+        cameraInformation.contains("backyard") ||
+                cameraInformation.contains("back_yard") -> {
+            "backyard"
+        }
+
+
+        else -> null
     }
 
+    val videoResource = when (selectedKey) {
+        "front_door" -> R.raw.front_door
+        "living_room" -> R.raw.living_room
+        "kitchen" -> R.raw.kitchen
+        "backyard" -> R.raw.backyard
+
+        else -> {
+            Log.e(
+                "CAMERA_VIDEO",
+                "Cannot select video for ${feed.name}, " +
+                        "path=${feed.linkedPath}"
+            )
+            return null
+        }
+    }
+
+    Log.e(
+        "CAMERA_VIDEO",
+        "device=${realDeviceName}, camera=${feed.name}, " +
+                "key=${selectedKey}, resource=${videoResource}"
+    )
+
     return Uri.parse(
-        "android.resource://${context.packageName}/$videoResource"
+        "android.resource://${context.packageName}/${videoResource}"
     )
 }
 
@@ -207,6 +323,11 @@ private fun resolveCameraVideoUri(
 @Composable
 fun CameraScreen(modifier: Modifier = Modifier) {
     val cameraFeeds = buildMappedCameraFeeds()
+
+    Log.e(
+        "CAMERA_TEST",
+        "CameraScreen opened. Camera count=${cameraFeeds.size}"
+    )
 
     val camerasByFloor = cameraFeeds
         .groupBy { it.floorName }
@@ -286,6 +407,9 @@ private fun CameraFeedItem(feed: CameraFeed) {
     )
 
     val videoUri = remember(
+        feed.id,
+        feed.name,
+        feed.roomName,
         feed.linkedPath,
         runtime.videoUrl,
         runtime.videoKey,
@@ -293,26 +417,27 @@ private fun CameraFeedItem(feed: CameraFeed) {
     ) {
         resolveCameraVideoUri(
             context = context,
-            linkedPath = feed.linkedPath,
+            feed = feed,
             runtime = runtime
         )
     }
+
+    Log.e(
+        "CAMERA_TEST",
+        "name=${feed.name}, path=${feed.linkedPath}, " +
+                "state=${runtime.state}, videoKey=${runtime.videoKey}, " +
+                "videoUri=${videoUri}"
+    )
 
     val currentFeed = feed.copy(
         isOnline = isOnline,
         videoUri = videoUri
     )
 
-    when {
-        isOnline && videoUri != null -> {
-            // ExoPlayer is created only in this branch.
-            LiveCameraCard(feed = currentFeed)
-        }
-
-        else -> {
-            // No ExoPlayer and no video while the camera is OFF.
-            OfflineCameraCard(feed = currentFeed)
-        }
+    if (isOnline && videoUri != null) {
+        LiveCameraCard(feed = currentFeed)
+    } else {
+        OfflineCameraCard(feed = currentFeed)
     }
 }
 
@@ -324,8 +449,8 @@ private fun LiveCameraCard(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    var playbackState by remember(feed.id) { mutableIntStateOf(Player.STATE_IDLE) }
-    var playbackError by remember(feed.id) { mutableStateOf<PlaybackException?>(null) }
+    var playbackState by remember(feed.id, feed.videoUri) { mutableIntStateOf(Player.STATE_IDLE) }
+    var playbackError by remember(feed.id, feed.videoUri) { mutableStateOf<PlaybackException?>(null) }
 
     val player = remember(feed.id, feed.videoUri) {
         ExoPlayer.Builder(context).build().apply {
@@ -546,7 +671,7 @@ private fun OfflineCameraCard(
                 modifier = Modifier.size(49.dp)
             )
             Text(
-                text = "Signal Lost",
+                text = "Camera is turned off",
                 color = OfflineContent,
                 fontSize = 15.sp,
                 modifier = Modifier.padding(top = 8.dp)
