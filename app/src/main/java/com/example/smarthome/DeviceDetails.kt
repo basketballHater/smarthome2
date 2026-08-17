@@ -1,4 +1,3 @@
-//poopman
 package com.example.smarthome
 
 import android.util.Log
@@ -188,33 +187,6 @@ fun rememberVirtualDeviceEntries(): List<DeviceEntry> {
         )
     }
 }
-
-/**
- * Live on/off state for a single real device, read from "{linkedPath}/state".
- * Shared by the top card and every connected-device row so each subscribes
- * only to the one path it actually needs instead of one big multi-path listener.
- */
-/*@Composable
-fun rememberDeviceState(linkedPath: String): String {
-    var state by remember(linkedPath) { mutableStateOf("off") }
-
-    DisposableEffect(linkedPath) {
-        val ref = FirebaseDatabase.getInstance().getReference("$linkedPath/state")
-        val listener = object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                state = snapshot.getValue(String::class.java) ?: "off"
-            }
-
-            override fun onCancelled(error: DatabaseError) {
-                Log.e("DEVICE_DETAIL", "Failed to read $linkedPath/state", error.toException())
-            }
-        }
-        ref.addValueEventListener(listener)
-        onDispose { ref.removeEventListener(listener) }
-    }
-
-    return state
-}*/
 
 @Composable
 fun rememberDeviceUsage(linkedPath: String): DeviceUsage {
