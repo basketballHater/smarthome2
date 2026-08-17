@@ -62,5 +62,7 @@ dependencies {
     implementation("com.google.firebase:firebase-messaging-ktx")
     implementation("com.google.firebase:firebase-functions-ktx")
 
+    testImplementation("junit:junit:4.13.2")
+
     implementation("com.google.code.gson:gson:2.10.1")
 }
